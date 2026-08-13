@@ -1,0 +1,27 @@
+{
+  "name": "ai-english-companion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Technical spike for a macOS AI English companion",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.main.json",
+    "build": "npm run build:renderer && npm run build:main",
+    "start": "npm run build && electron .",
+    "smoke": "npm run build && electron . --smoke-test"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.13",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "6.0.5",
+    "electron": "43.4.0",
+    "typescript": "5.9.3",
+    "vite": "8.2.1"
+  }
+}
