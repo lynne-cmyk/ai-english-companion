@@ -1,0 +1,15 @@
+{
+  "name": "ai-english-companion-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Backend API for AI English Companion",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "npm run build && node dist/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "22.18.13",
+    "typescript": "5.9.3"
+  }
+}

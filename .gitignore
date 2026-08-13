@@ -4,3 +4,4 @@ dist-electron/
 dist-native/
 .DS_Store
 npm-debug.log*
+server/dist/
