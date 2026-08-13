@@ -1,4 +1,5 @@
 import { app, BrowserWindow, clipboard, screen } from "electron";
+import { execFile } from "node:child_process";
 import path from "node:path";
 
 let mainWindow: BrowserWindow | null = null;
@@ -7,7 +8,7 @@ let clipboardTimer: NodeJS.Timeout | null = null;
 const isSmokeTest = process.argv.includes("--smoke-test");
 const CLIPBOARD_POLL_INTERVAL_MS = 500;
 const FLOATING_WINDOW_WIDTH = 220;
-const FLOATING_WINDOW_HEIGHT = 72;
+const FLOATING_WINDOW_HEIGHT = 104;
 const FLOATING_WINDOW_OFFSET = 16;
 
 const floatingWindowHtml = `<!doctype html>
@@ -23,19 +24,34 @@ const floatingWindowHtml = `<!doctype html>
       }
 
       body {
-        display: grid;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
         min-height: 100vh;
         margin: 0;
-        place-items: center;
         border: 1px solid #d1d5db;
         box-sizing: border-box;
+        padding: 14px 16px;
       }
 
       #word {
-        padding: 0 16px;
         overflow: hidden;
         font-size: 20px;
         font-weight: 600;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #current-app-label {
+        margin-top: 10px;
+        color: #6b7280;
+        font-size: 12px;
+      }
+
+      #current-app {
+        margin-top: 2px;
+        overflow: hidden;
+        font-size: 14px;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
@@ -43,11 +59,31 @@ const floatingWindowHtml = `<!doctype html>
   </head>
   <body>
     <div id="word"></div>
+    <div id="current-app-label">Current App:</div>
+    <div id="current-app"></div>
   </body>
 </html>`;
 
 function isSingleEnglishWord(value: string) {
   return /^[A-Za-z]+$/.test(value);
+}
+
+function getFrontmostApplicationName() {
+  const helperPath = path.join(__dirname, "../dist-native/frontmost-app");
+
+  return new Promise<string>((resolve) => {
+    execFile(helperPath, { timeout: 2_000 }, (error, stdout) => {
+      if (error) {
+        console.error("[current-app] Detection failed:", error.message);
+        resolve("Unknown");
+        return;
+      }
+
+      const applicationName = stdout.trim() || "Unknown";
+      console.log(`[current-app] Detected: ${applicationName}`);
+      resolve(applicationName);
+    });
+  });
 }
 
 function moveFloatingWindowNearCursor() {
@@ -75,7 +111,7 @@ function moveFloatingWindowNearCursor() {
   floatingWindow.setPosition(Math.round(x), Math.round(y), false);
 }
 
-async function showFloatingWord(word: string) {
+async function showFloatingWord(word: string, currentApplication: string) {
   if (floatingWindow === null) {
     floatingWindow = new BrowserWindow({
       width: FLOATING_WINDOW_WIDTH,
@@ -114,11 +150,14 @@ async function showFloatingWord(word: string) {
   }
 
   await floatingWindow.webContents.executeJavaScript(
-    `document.getElementById("word").textContent = ${JSON.stringify(word)}`,
+    `document.getElementById("word").textContent = ${JSON.stringify(word)};
+     document.getElementById("current-app").textContent = ${JSON.stringify(currentApplication)};`,
   );
   moveFloatingWindowNearCursor();
   floatingWindow.showInactive();
-  console.log(`[floating] Showing word: ${word}`);
+  console.log(
+    `[floating] Showing word: ${word}; current app: ${currentApplication}`,
+  );
 }
 
 function startClipboardMonitor() {
@@ -146,9 +185,13 @@ function startClipboardMonitor() {
 
     if (isSingleEnglishWord(normalizedText)) {
       console.log(`Detected word: ${normalizedText}`);
-      void showFloatingWord(normalizedText).catch((error: unknown) => {
-        console.error("[floating] Failed to show window:", error);
-      });
+      void getFrontmostApplicationName()
+        .then((currentApplication) =>
+          showFloatingWord(normalizedText, currentApplication),
+        )
+        .catch((error: unknown) => {
+          console.error("[floating] Failed to show window:", error);
+        });
       return;
     }
 

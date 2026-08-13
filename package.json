@@ -7,7 +7,8 @@
   "scripts": {
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
-    "build": "npm run build:renderer && npm run build:main",
+    "build:native": "mkdir -p dist-native && xcrun clang -fobjc-arc -mmacosx-version-min=14.0 native/FrontmostApp.m -framework AppKit -o dist-native/frontmost-app",
+    "build": "npm run build:renderer && npm run build:main && npm run build:native",
     "start": "npm run build && electron .",
     "smoke": "npm run build && electron . --smoke-test"
   },
