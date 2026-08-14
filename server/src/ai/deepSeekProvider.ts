@@ -191,6 +191,18 @@ export class DeepSeekAIProvider implements AIProvider {
       });
 
       if (!response.ok) {
+        let errorBody = "<unable to read error body>";
+
+        try {
+          errorBody = (await response.text()) || "<empty error body>";
+        } catch {
+          // Keep the original HTTP_ERROR behavior if the debug body cannot be read.
+        }
+
+        const safeErrorBody = errorBody.split(apiKey).join("[REDACTED]");
+        console.error(`[deepseek] HTTP status: ${response.status}`);
+        console.error(`[deepseek] Error body: ${safeErrorBody}`);
+
         throw new AIProviderError(
           "HTTP_ERROR",
           `DeepSeek request failed with HTTP ${response.status}`,
