@@ -8,6 +8,7 @@ export interface ExplanationResult {
   word: string;
   phonetic: string;
   translation: string;
+  general_meaning: string;
   context_explanation: string;
   example: string;
 }

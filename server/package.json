@@ -6,8 +6,8 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "npm run build && node dist/index.js",
-    "test": "npm run build && node --test dist/app.test.js dist/ai/mockProvider.test.js",
+    "start": "npm run build && node --env-file-if-exists=.env dist/index.js",
+    "test": "npm run build && node --test dist/app.test.js dist/ai/mockProvider.test.js dist/ai/deepSeekProvider.test.js dist/ai/providerFactory.test.js",
     "test:api": "npm run build && node --test dist/app.test.js",
     "test:mock": "npm run build && node --test dist/ai/mockProvider.test.js"
   },

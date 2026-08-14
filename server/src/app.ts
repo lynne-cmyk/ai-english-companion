@@ -1,5 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import type { AIProvider, GenerateExplanationInput } from "./ai";
+import {
+  AIProviderError,
+  type AIProvider,
+  type GenerateExplanationInput,
+} from "./ai";
 
 const MAX_REQUEST_BODY_BYTES = 16 * 1024;
 
@@ -56,6 +60,19 @@ function validateExplanationInput(value: unknown): GenerateExplanationInput | nu
   };
 }
 
+function getProviderErrorStatus(error: AIProviderError): number {
+  switch (error.code) {
+    case "TIMEOUT":
+      return 504;
+    case "HTTP_ERROR":
+    case "INVALID_RESPONSE":
+      return 502;
+    case "MISSING_API_KEY":
+    case "NETWORK_ERROR":
+      return 503;
+  }
+}
+
 export function createApiServer(aiProvider: AIProvider) {
   return createServer(async (request, response) => {
     if (request.method === "GET" && request.url === "/health") {
@@ -85,8 +102,15 @@ export function createApiServer(aiProvider: AIProvider) {
       try {
         const result = await aiProvider.generateExplanation(input);
         sendJson(response, 200, result);
-      } catch {
-        sendJson(response, 500, { error: "AI provider failed" });
+      } catch (error) {
+        if (error instanceof AIProviderError) {
+          sendJson(response, getProviderErrorStatus(error), {
+            error: "AI provider failed",
+            code: error.code,
+          });
+        } else {
+          sendJson(response, 500, { error: "AI provider failed" });
+        }
       }
 
       return;
