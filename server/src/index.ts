@@ -1,23 +1,13 @@
-import { createServer } from "node:http";
+import { MockAIProvider } from "./ai";
+import { createApiServer } from "./app";
 
 const host = "127.0.0.1";
 const port = Number(process.env.PORT ?? 3001);
-
-const server = createServer((request, response) => {
-  if (request.method === "GET" && request.url === "/health") {
-    response.writeHead(200, {
-      "Content-Type": "application/json; charset=utf-8",
-    });
-    response.end(JSON.stringify({ status: "ok" }));
-    return;
-  }
-
-  response.writeHead(404, {
-    "Content-Type": "application/json; charset=utf-8",
-  });
-  response.end(JSON.stringify({ error: "Not Found" }));
-});
+const aiProvider = new MockAIProvider();
+const server = createApiServer(aiProvider);
 
 server.listen(port, host, () => {
-  console.log(`[server] Listening on http://${host}:${port}`);
+  console.log(
+    `[server] Listening on http://${host}:${port} with ${aiProvider.name} AI provider`,
+  );
 });

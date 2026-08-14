@@ -6,7 +6,10 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "npm run build && node dist/index.js"
+    "start": "npm run build && node dist/index.js",
+    "test": "npm run build && node --test dist/app.test.js dist/ai/mockProvider.test.js",
+    "test:api": "npm run build && node --test dist/app.test.js",
+    "test:mock": "npm run build && node --test dist/ai/mockProvider.test.js"
   },
   "devDependencies": {
     "@types/node": "22.18.13",
