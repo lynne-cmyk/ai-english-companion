@@ -13,7 +13,7 @@ export interface ContextSegment {
 export interface ResultContent {
   word: string;
   phonetic: string;
-  partOfSpeech: string;
+  partOfSpeech?: string;
   translation: string;
   context: ContextSegment[];
 }

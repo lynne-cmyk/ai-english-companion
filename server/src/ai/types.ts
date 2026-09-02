@@ -7,6 +7,7 @@ export interface GenerateExplanationInput {
 export interface ExplanationResult {
   word: string;
   phonetic: string;
+  part_of_speech?: string;
   translation: string;
   general_meaning: string;
   context_explanation: string;

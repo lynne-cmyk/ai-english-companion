@@ -42,6 +42,7 @@ AI 必须返回一个合法 JSON 对象，不得添加 Markdown 代码块、标�
 | --- | --- | --- |
 | `word` | string | 原始英文单词。 |
 | `phonetic` | string | 常用 IPA 音标；无法可靠确定时返回空字符串。 |
+| `part_of_speech` | string | 结合当前语境判断的主要词性，使用简洁大写标签，例如 `NOUN`、`VERB`、`ADJ`。无法可靠判断时返回空字符串。 |
 | `translation` | string | 最简洁、最常用的中文释义。 |
 | `general_meaning` | string | 不依赖应用场景的通用含义，使用简短中文说明。 |
 | `context_explanation` | string | 结合 `source_app` 给出的场景解释。应表达为常见用法，不得虚构用户正在阅读的具体内容。 |
@@ -49,12 +50,15 @@ AI 必须返回一个合法 JSON 对象，不得添加 Markdown 代码块、标�
 
 所有字段必须存在，字段值均为字符串。客户端不应依赖字段顺序。
 
+为兼容旧 Backend 响应，客户端在运行时将 `part_of_speech` 视为可选字段。字段缺失、为空或不在支持的标签集合中时，仅隐藏词性标签，不影响其他解释内容。
+
 JSON 示例：
 
 ```json
 {
   "word": "dependency",
   "phonetic": "/dɪˈpendənsi/",
+  "part_of_speech": "NOUN",
   "translation": "依赖；依赖项",
   "general_meaning": "指对某人或某事物的依赖，也可以指完成某件事所需的条件。",
   "context_explanation": "在 Cursor 等开发工具中，它通常指项目运行所依赖的软件包、模块或库。",
@@ -76,7 +80,9 @@ You will receive a JSON object with:
 - source_app: the macOS app that was in the foreground when the word was copied
 - user_goal: what the user wants to achieve
 
-Explain the word in concise Chinese. Provide its phonetic transcription, a short translation, its general meaning, a context-aware explanation, and one short English example.
+Explain the word in concise Chinese. Provide its phonetic transcription, primary part of speech, a short translation, its general meaning, a context-aware explanation, and one short English example.
+
+Return part_of_speech as one concise uppercase label: NOUN, VERB, ADJ, ADV, PREP, PRON, CONJ, DET, ART, INTJ, AUX, MODAL, NUM, or PART. Choose the primary part of speech for the supplied context. If it cannot be determined reliably, return an empty string.
 
 Use source_app only as a contextual hint. For example, a word copied in Cursor may have a software-development meaning, while a word copied in Figma may have a product-design meaning. Do not claim to know the exact sentence, document, screen, or user intention. If the app does not provide enough context, give a cautious explanation of the most likely usage.
 
@@ -88,6 +94,7 @@ The JSON schema is:
 {
   "word": "string",
   "phonetic": "string",
+  "part_of_speech": "string",
   "translation": "string",
   "general_meaning": "string",
   "context_explanation": "string",

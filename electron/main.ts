@@ -1,6 +1,12 @@
-import { app, BrowserWindow, clipboard, screen } from "electron";
-import { execFile } from "node:child_process";
+import { app, BrowserWindow, clipboard, ipcMain, screen } from "electron";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
+import {
+  POPOVER_IPC_CHANNELS,
+  type ExplanationResult,
+  type PopoverContentHeightPayload,
+  type PopoverStatePayload,
+} from "./popoverIpc";
 
 let mainWindow: BrowserWindow | null = null;
 let floatingWindow: BrowserWindow | null = null;
@@ -8,23 +14,43 @@ let floatingWindowLoadPromise: Promise<void> | null = null;
 let clipboardTimer: NodeJS.Timeout | null = null;
 let activeAIRequestController: AbortController | null = null;
 let latestAIRequestId = 0;
+let dismissedPopoverRequestId: number | null = null;
+let reactPopoverReady = false;
+let pendingReactPopoverState: PopoverStatePayload | null = null;
+let floatingWindowAnchor: { x: number; y: number } | null = null;
+let globalMouseMonitorProcess: ChildProcess | null = null;
+let globalMouseMonitorOutput = "";
+let applicationIsQuitting = false;
 const isSmokeTest = process.argv.includes("--smoke-test");
 const CLIPBOARD_POLL_INTERVAL_MS = 500;
-const FLOATING_WINDOW_WIDTH = 360;
-const FLOATING_WINDOW_HEIGHT = 300;
+const LEGACY_FLOATING_WINDOW_WIDTH = 360;
+const LEGACY_FLOATING_WINDOW_HEIGHT = 300;
+const REACT_FLOATING_WINDOW_WIDTH = 296;
+const REACT_FLOATING_WINDOW_INITIAL_HEIGHT = 64;
+const REACT_FLOATING_WINDOW_MAX_HEIGHT = 368;
 const FLOATING_WINDOW_OFFSET = 16;
 const BACKEND_EXPLAIN_URL = "http://127.0.0.1:3001/ai/explain";
 const AI_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_USER_GOAL = "learn English while working";
+const POPOVER_RENDERER =
+  process.env.AI_ENGLISH_POPOVER_RENDERER === "legacy" ? "legacy" : "react";
 
-interface ExplanationResult {
-  word: string;
-  phonetic: string;
-  translation: string;
-  general_meaning: string;
-  context_explanation: string;
-  example: string;
-}
+const PART_OF_SPEECH_LABELS = new Set([
+  "NOUN",
+  "VERB",
+  "ADJ",
+  "ADV",
+  "PREP",
+  "PRON",
+  "CONJ",
+  "DET",
+  "ART",
+  "INTJ",
+  "AUX",
+  "MODAL",
+  "NUM",
+  "PART",
+]);
 
 type FloatingWindowState =
   | {
@@ -154,6 +180,17 @@ function isSingleEnglishWord(value: string) {
   return /^[A-Za-z]+$/.test(value);
 }
 
+function normalizePartOfSpeech(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalizedValue = value.trim().toUpperCase();
+  return PART_OF_SPEECH_LABELS.has(normalizedValue)
+    ? normalizedValue
+    : undefined;
+}
+
 function isExplanationResult(value: unknown): value is ExplanationResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
@@ -190,19 +227,125 @@ function getFrontmostApplicationName() {
   });
 }
 
+function isPointInsideFloatingWindow(point: { x: number; y: number }) {
+  if (floatingWindow === null) {
+    return false;
+  }
+
+  const bounds = floatingWindow.getBounds();
+  return (
+    point.x >= bounds.x &&
+    point.x < bounds.x + bounds.width &&
+    point.y >= bounds.y &&
+    point.y < bounds.y + bounds.height
+  );
+}
+
+function handleGlobalMouseDown() {
+  if (floatingWindow === null || !floatingWindow.isVisible()) {
+    return;
+  }
+
+  const cursorPoint = screen.getCursorScreenPoint();
+  const bounds = floatingWindow.getBounds();
+  const isInside = isPointInsideFloatingWindow(cursorPoint);
+
+  console.log(
+    `[floating] Mouse down received: point=${cursorPoint.x},${cursorPoint.y} bounds=${bounds.x},${bounds.y},${bounds.width},${bounds.height} inside=${String(isInside)}`,
+  );
+
+  if (!isInside) {
+    dismissedPopoverRequestId = latestAIRequestId;
+    floatingWindow.hide();
+    console.log(
+      `[floating] hide() called for request ${latestAIRequestId}; visible=${String(floatingWindow.isVisible())}.`,
+    );
+  }
+}
+
+function startGlobalMouseMonitor() {
+  if (process.platform !== "darwin" || globalMouseMonitorProcess !== null) {
+    return;
+  }
+
+  const helperPath = path.join(
+    __dirname,
+    "../dist-native/global-mouse-monitor",
+  );
+  const monitorProcess = spawn(helperPath, [], {
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  globalMouseMonitorProcess = monitorProcess;
+
+  monitorProcess.stdout?.on("data", (chunk: Buffer) => {
+    globalMouseMonitorOutput += chunk.toString("utf8");
+
+    let newlineIndex = globalMouseMonitorOutput.indexOf("\n");
+
+    while (newlineIndex !== -1) {
+      const eventName = globalMouseMonitorOutput.slice(0, newlineIndex).trim();
+      globalMouseMonitorOutput = globalMouseMonitorOutput.slice(
+        newlineIndex + 1,
+      );
+
+      if (eventName === "mouse-down") {
+        handleGlobalMouseDown();
+      } else if (eventName === "ready") {
+        console.log("[floating] Global mouse monitor ready.");
+      }
+
+      newlineIndex = globalMouseMonitorOutput.indexOf("\n");
+    }
+  });
+
+  monitorProcess.stderr?.on("data", (chunk: Buffer) => {
+    const message = chunk.toString("utf8").trim();
+
+    if (message !== "") {
+      console.error(`[floating] Mouse monitor: ${message}`);
+    }
+  });
+
+  monitorProcess.on("error", (error) => {
+    if (globalMouseMonitorProcess === monitorProcess) {
+      globalMouseMonitorProcess = null;
+    }
+
+    console.error("[floating] Failed to start mouse monitor:", error.message);
+  });
+
+  monitorProcess.on("exit", (code, signal) => {
+    if (globalMouseMonitorProcess === monitorProcess) {
+      globalMouseMonitorProcess = null;
+    }
+
+    globalMouseMonitorOutput = "";
+
+    if (!applicationIsQuitting && code !== 0) {
+      console.error(
+        `[floating] Mouse monitor exited (code=${String(code)}, signal=${String(signal)}).`,
+      );
+    }
+  });
+
+  console.log("[floating] Global mouse monitor started.");
+}
+
 function moveFloatingWindowNearCursor() {
   if (floatingWindow === null) {
     return;
   }
 
-  const cursorPoint = screen.getCursorScreenPoint();
+  const cursorPoint = floatingWindowAnchor ?? screen.getCursorScreenPoint();
+  const { width: windowWidth, height: windowHeight } =
+    floatingWindow.getContentBounds();
   const { workArea } = screen.getDisplayNearestPoint(cursorPoint);
-  const maximumX = workArea.x + workArea.width - FLOATING_WINDOW_WIDTH;
-  const maximumY = workArea.y + workArea.height - FLOATING_WINDOW_HEIGHT;
+  const maximumX = workArea.x + workArea.width - windowWidth;
+  const maximumY = workArea.y + workArea.height - windowHeight;
   const preferredX = cursorPoint.x + FLOATING_WINDOW_OFFSET;
   const preferredY = cursorPoint.y + FLOATING_WINDOW_OFFSET;
-  const fallbackX = cursorPoint.x - FLOATING_WINDOW_WIDTH - FLOATING_WINDOW_OFFSET;
-  const fallbackY = cursorPoint.y - FLOATING_WINDOW_HEIGHT - FLOATING_WINDOW_OFFSET;
+  const fallbackX = cursorPoint.x - windowWidth - FLOATING_WINDOW_OFFSET;
+  const fallbackY = cursorPoint.y - windowHeight - FLOATING_WINDOW_OFFSET;
   const x = Math.min(
     Math.max(preferredX <= maximumX ? preferredX : fallbackX, workArea.x),
     maximumX,
@@ -215,11 +358,11 @@ function moveFloatingWindowNearCursor() {
   floatingWindow.setPosition(Math.round(x), Math.round(y), false);
 }
 
-async function ensureFloatingWindow() {
+async function ensureLegacyFloatingWindow() {
   if (floatingWindow === null) {
     floatingWindow = new BrowserWindow({
-      width: FLOATING_WINDOW_WIDTH,
-      height: FLOATING_WINDOW_HEIGHT,
+      width: LEGACY_FLOATING_WINDOW_WIDTH,
+      height: LEGACY_FLOATING_WINDOW_HEIGHT,
       show: false,
       frame: false,
       resizable: false,
@@ -246,13 +389,14 @@ async function ensureFloatingWindow() {
     floatingWindow.on("closed", () => {
       floatingWindow = null;
       floatingWindowLoadPromise = null;
+      floatingWindowAnchor = null;
     });
 
     floatingWindowLoadPromise = floatingWindow.loadURL(
       `data:text/html;charset=UTF-8,${encodeURIComponent(floatingWindowHtml)}`,
     );
     await floatingWindowLoadPromise;
-    console.log("[floating] Window created.");
+    console.log("[floating] Legacy window created.");
   } else if (floatingWindowLoadPromise !== null) {
     await floatingWindowLoadPromise;
   }
@@ -264,11 +408,79 @@ async function ensureFloatingWindow() {
   return floatingWindow;
 }
 
-async function showFloatingState(
+async function ensureReactFloatingWindow() {
+  if (floatingWindow === null) {
+    floatingWindow = new BrowserWindow({
+      width: REACT_FLOATING_WINDOW_WIDTH,
+      height: REACT_FLOATING_WINDOW_INITIAL_HEIGHT,
+      maxWidth: REACT_FLOATING_WINDOW_WIDTH,
+      maxHeight: REACT_FLOATING_WINDOW_MAX_HEIGHT,
+      useContentSize: true,
+      show: false,
+      frame: false,
+      transparent: true,
+      backgroundColor: "#00000000",
+      resizable: false,
+      movable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      focusable: false,
+      acceptFirstMouse: true,
+      skipTaskbar: true,
+      alwaysOnTop: true,
+      hasShadow: true,
+      webPreferences: {
+        preload: path.join(__dirname, "preload.js"),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+      },
+    });
+
+    floatingWindow.setAlwaysOnTop(true, "floating");
+    floatingWindow.setVisibleOnAllWorkspaces(true, {
+      visibleOnFullScreen: true,
+    });
+
+    floatingWindow.webContents.on(
+      "did-fail-load",
+      (_event, code, description) => {
+        console.error(
+          `[floating] React renderer failed to load (${code}): ${description}`,
+        );
+      },
+    );
+
+    floatingWindow.on("closed", () => {
+      floatingWindow = null;
+      floatingWindowLoadPromise = null;
+      reactPopoverReady = false;
+      pendingReactPopoverState = null;
+      floatingWindowAnchor = null;
+    });
+
+    floatingWindowLoadPromise = floatingWindow.loadFile(
+      path.join(__dirname, "../dist/popover-window.html"),
+    );
+    await floatingWindowLoadPromise;
+    console.log("[floating] React window created and waiting for content size.");
+  } else if (floatingWindowLoadPromise !== null) {
+    await floatingWindowLoadPromise;
+  }
+
+  if (floatingWindow === null) {
+    throw new Error("Floating window was closed before it finished loading");
+  }
+
+  return floatingWindow;
+}
+
+async function showLegacyFloatingState(
   state: FloatingWindowState,
   requestId: number,
 ) {
-  const window = await ensureFloatingWindow();
+  const window = await ensureLegacyFloatingWindow();
 
   if (requestId !== latestAIRequestId) {
     return;
@@ -303,8 +515,144 @@ async function showFloatingState(
     return;
   }
 
+  if (dismissedPopoverRequestId === requestId) {
+    return;
+  }
+
   moveFloatingWindowNearCursor();
   window.showInactive();
+}
+
+async function showReactFloatingState(
+  state: FloatingWindowState,
+  requestId: number,
+) {
+  const window = await ensureReactFloatingWindow();
+
+  if (requestId !== latestAIRequestId) {
+    return;
+  }
+
+  const payload: PopoverStatePayload = { ...state, requestId };
+  pendingReactPopoverState = payload;
+
+  if (reactPopoverReady) {
+    window.webContents.send(POPOVER_IPC_CHANNELS.state, payload);
+  }
+}
+
+async function showFloatingState(
+  state: FloatingWindowState,
+  requestId: number,
+) {
+  if (POPOVER_RENDERER === "legacy") {
+    await showLegacyFloatingState(state, requestId);
+    return;
+  }
+
+  await showReactFloatingState(state, requestId);
+}
+
+function isPopoverContentHeightPayload(
+  value: unknown,
+): value is PopoverContentHeightPayload {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const payload = value as Record<string, unknown>;
+  return (
+    Number.isInteger(payload.requestId) &&
+    typeof payload.height === "number" &&
+    Number.isFinite(payload.height) &&
+    (payload.status === "loading" ||
+      payload.status === "result" ||
+      payload.status === "error")
+  );
+}
+
+function registerReactPopoverIpc() {
+  ipcMain.on(POPOVER_IPC_CHANNELS.ready, (event) => {
+    if (
+      floatingWindow === null ||
+      event.sender !== floatingWindow.webContents ||
+      POPOVER_RENDERER !== "react"
+    ) {
+      return;
+    }
+
+    reactPopoverReady = true;
+
+    if (
+      pendingReactPopoverState !== null &&
+      pendingReactPopoverState.requestId === latestAIRequestId
+    ) {
+      event.sender.send(
+        POPOVER_IPC_CHANNELS.state,
+        pendingReactPopoverState,
+      );
+    }
+  });
+
+  ipcMain.on(
+    POPOVER_IPC_CHANNELS.contentHeight,
+    (event, payload: unknown) => {
+      const candidate =
+        typeof payload === "object" && payload !== null && !Array.isArray(payload)
+          ? (payload as Record<string, unknown>)
+          : null;
+
+      if (
+        floatingWindow === null ||
+        event.sender !== floatingWindow.webContents ||
+        POPOVER_RENDERER !== "react" ||
+        !isPopoverContentHeightPayload(payload) ||
+        payload.requestId !== latestAIRequestId ||
+        pendingReactPopoverState?.requestId !== payload.requestId ||
+        pendingReactPopoverState.status !== payload.status
+      ) {
+        console.log(
+          `[floating] Height report rejected request=${String(candidate?.requestId)} status=${String(candidate?.status)} latest=${latestAIRequestId} pending=${String(pendingReactPopoverState?.requestId)}:${String(pendingReactPopoverState?.status)} dismissed=${String(dismissedPopoverRequestId)}.`,
+        );
+        return;
+      }
+
+      const nextHeight = Math.min(
+        Math.max(Math.ceil(payload.height), 1),
+        REACT_FLOATING_WINDOW_MAX_HEIGHT,
+      );
+      const currentBounds = floatingWindow.getContentBounds();
+
+      console.log(
+        `[floating] Height report accepted request=${payload.requestId} status=${payload.status} height=${nextHeight} dismissed=${String(dismissedPopoverRequestId)}.`,
+      );
+
+      if (
+        currentBounds.width !== REACT_FLOATING_WINDOW_WIDTH ||
+        currentBounds.height !== nextHeight
+      ) {
+        floatingWindow.setContentSize(
+          REACT_FLOATING_WINDOW_WIDTH,
+          nextHeight,
+          false,
+        );
+      }
+
+      if (dismissedPopoverRequestId === payload.requestId) {
+        console.log(
+          `[floating] Request ${payload.requestId} remains hidden after state=${payload.status}.`,
+        );
+        return;
+      }
+
+      moveFloatingWindowNearCursor();
+      const wasVisible = floatingWindow.isVisible();
+      floatingWindow.showInactive();
+      console.log(
+        `[floating] showInactive() request=${payload.requestId} window=${floatingWindow.id} visibleBefore=${String(wasVisible)} visibleAfter=${String(floatingWindow.isVisible())}.`,
+      );
+    },
+  );
 }
 
 async function requestAIExplanation(
@@ -333,13 +681,26 @@ async function requestAIExplanation(
     throw new Error("Backend returned an invalid explanation result");
   }
 
-  return result;
+  const partOfSpeech = normalizePartOfSpeech(result.part_of_speech);
+  const { part_of_speech: _partOfSpeech, ...requiredResult } = result;
+
+  return partOfSpeech === undefined
+    ? requiredResult
+    : { ...requiredResult, part_of_speech: partOfSpeech };
 }
 
 async function handleDetectedWord(word: string) {
   const requestId = ++latestAIRequestId;
   let currentApplication = "Detecting...";
 
+  console.log(
+    `[floating] Request started id=${requestId} word=${word} dismissedBefore=${String(dismissedPopoverRequestId)} visibleBeforeLoading=${String(floatingWindow?.isVisible() ?? false)}.`,
+  );
+  dismissedPopoverRequestId = null;
+  console.log(
+    `[floating] Request reset id=${requestId} dismissedAfter=${String(dismissedPopoverRequestId)}.`,
+  );
+  floatingWindowAnchor = screen.getCursorScreenPoint();
   activeAIRequestController?.abort();
   activeAIRequestController = null;
 
@@ -497,29 +858,47 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
-  startClipboardMonitor();
-  createWindow();
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
-  app.on("activate", () => {
-    if (mainWindow === null) {
-      createWindow();
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.whenReady().then(() => {
+    if (POPOVER_RENDERER === "react") {
+      registerReactPopoverIpc();
+    }
+
+    console.log(
+      `[app] Electron started pid=${process.pid} renderer=${POPOVER_RENDERER}`,
+    );
+    startGlobalMouseMonitor();
+    startClipboardMonitor();
+    createWindow();
+
+    app.on("activate", () => {
+      if (mainWindow === null) {
+        createWindow();
+      }
+    });
+  });
+
+  app.on("will-quit", () => {
+    applicationIsQuitting = true;
+    activeAIRequestController?.abort();
+    activeAIRequestController = null;
+
+    if (clipboardTimer !== null) {
+      clearInterval(clipboardTimer);
+      clipboardTimer = null;
+    }
+
+    globalMouseMonitorProcess?.kill();
+    globalMouseMonitorProcess = null;
+  });
+
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") {
+      app.quit();
     }
   });
-});
-
-app.on("will-quit", () => {
-  activeAIRequestController?.abort();
-  activeAIRequestController = null;
-
-  if (clipboardTimer !== null) {
-    clearInterval(clipboardTimer);
-    clipboardTimer = null;
-  }
-});
-
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-});
+}

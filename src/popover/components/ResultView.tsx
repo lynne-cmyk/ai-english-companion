@@ -5,7 +5,9 @@ export function ResultView({ content }: { content: ResultContent }) {
   return (
     <div className="result-view">
       <section className="meaning-section">
-        <span className="part-of-speech">{content.partOfSpeech}</span>
+        {content.partOfSpeech && (
+          <span className="part-of-speech">{content.partOfSpeech}</span>
+        )}
         <p className="translation zh-copy">{content.translation}</p>
       </section>
 

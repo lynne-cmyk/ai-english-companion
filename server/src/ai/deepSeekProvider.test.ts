@@ -15,6 +15,7 @@ const input = {
 const explanation = {
   word: "dependency",
   phonetic: "/dɪˈpendənsi/",
+  part_of_speech: "NOUN",
   translation: "依赖；依赖项",
   general_meaning: "指对某人或某事物的依赖。",
   context_explanation: "在 Cursor 中，它通常指项目依赖的软件包。",
@@ -194,4 +195,41 @@ test("DeepSeekAIProvider rejects JSON missing a required field", async () => {
     provider.generateExplanation(input),
     "INVALID_RESPONSE",
   );
+});
+
+test("DeepSeekAIProvider normalizes a supported part of speech", async () => {
+  const fetchImplementation = (async () =>
+    chatCompletionResponse(
+      JSON.stringify({ ...explanation, part_of_speech: "adjective" }),
+    )) as typeof fetch;
+  const provider = new DeepSeekAIProvider({
+    environment: { DEEPSEEK_API_KEY: "test-api-key" },
+    fetchImplementation,
+  });
+
+  assert.equal(
+    (await provider.generateExplanation(input)).part_of_speech,
+    "ADJ",
+  );
+});
+
+test("DeepSeekAIProvider omits an absent or invalid part of speech", async () => {
+  const { part_of_speech: _partOfSpeech, ...withoutPartOfSpeech } = explanation;
+  const responses = [
+    withoutPartOfSpeech,
+    { ...explanation, part_of_speech: "unknown category" },
+  ];
+
+  for (const response of responses) {
+    const provider = new DeepSeekAIProvider({
+      environment: { DEEPSEEK_API_KEY: "test-api-key" },
+      fetchImplementation: (async () =>
+        chatCompletionResponse(JSON.stringify(response))) as typeof fetch,
+    });
+
+    assert.equal(
+      (await provider.generateExplanation(input)).part_of_speech,
+      undefined,
+    );
+  }
 });

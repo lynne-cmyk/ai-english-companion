@@ -92,6 +92,7 @@ Electron 校验响应
 {
   "word": "dependency",
   "phonetic": "/dɪˈpendənsi/",
+  "part_of_speech": "NOUN",
   "translation": "依赖；依赖项",
   "general_meaning": "指对某人或某事物的依赖，也可以指完成某件事所需的条件。",
   "context_explanation": "在 Cursor 等开发工具中，它通常指项目运行所依赖的软件包、模块或库。",

@@ -18,7 +18,9 @@ You will receive a JSON object with:
 - source_app: the macOS app that was in the foreground when the word was copied
 - user_goal: what the user wants to achieve
 
-Explain the word in concise Chinese. Provide its phonetic transcription, a short translation, its general meaning, a context-aware explanation, and one short English example.
+Explain the word in concise Chinese. Provide its phonetic transcription, primary part of speech, a short translation, its general meaning, a context-aware explanation, and one short English example.
+
+Return part_of_speech as one concise uppercase label: NOUN, VERB, ADJ, ADV, PREP, PRON, CONJ, DET, ART, INTJ, AUX, MODAL, NUM, or PART. Choose the primary part of speech for the supplied context. If it cannot be determined reliably, return an empty string.
 
 Use source_app only as a contextual hint. For example, a word copied in Cursor may have a software-development meaning, while a word copied in Figma may have a product-design meaning. Do not claim to know the exact sentence, document, screen, or user intention. If the app does not provide enough context, give a cautious explanation of the most likely usage.
 
@@ -30,6 +32,7 @@ The JSON schema is:
 {
   "word": "string",
   "phonetic": "string",
+  "part_of_speech": "string",
   "translation": "string",
   "general_meaning": "string",
   "context_explanation": "string",
@@ -50,6 +53,46 @@ interface DeepSeekChatCompletion {
       content?: unknown;
     };
   }>;
+}
+
+const PART_OF_SPEECH_ALIASES: Readonly<Record<string, string>> = {
+  N: "NOUN",
+  NOUN: "NOUN",
+  V: "VERB",
+  VERB: "VERB",
+  ADJ: "ADJ",
+  ADJECTIVE: "ADJ",
+  ADV: "ADV",
+  ADVERB: "ADV",
+  PREP: "PREP",
+  PREPOSITION: "PREP",
+  PRON: "PRON",
+  PRONOUN: "PRON",
+  CONJ: "CONJ",
+  CONJUNCTION: "CONJ",
+  DET: "DET",
+  DETERMINER: "DET",
+  ART: "ART",
+  ARTICLE: "ART",
+  INTJ: "INTJ",
+  INTERJECTION: "INTJ",
+  AUX: "AUX",
+  AUXILIARY: "AUX",
+  MODAL: "MODAL",
+  NUM: "NUM",
+  NUMBER: "NUM",
+  NUMERAL: "NUM",
+  PART: "PART",
+  PARTICLE: "PART",
+};
+
+function normalizePartOfSpeech(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalizedValue = value.trim().toUpperCase().replace(/\.$/, "");
+  return PART_OF_SPEECH_ALIASES[normalizedValue];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -98,6 +141,7 @@ function parseExplanationResult(
   }
 
   const result = value as unknown as ExplanationResult;
+  const partOfSpeech = normalizePartOfSpeech(value.part_of_speech);
 
   if (result.word !== expectedWord) {
     throw new AIProviderError(
@@ -109,6 +153,9 @@ function parseExplanationResult(
   return {
     word: result.word,
     phonetic: result.phonetic,
+    ...(partOfSpeech === undefined
+      ? {}
+      : { part_of_speech: partOfSpeech }),
     translation: result.translation,
     general_meaning: result.general_meaning,
     context_explanation: result.context_explanation,

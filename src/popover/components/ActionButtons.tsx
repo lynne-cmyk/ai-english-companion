@@ -54,9 +54,11 @@ export function BookmarkButton({
 
 export function SpeakerButton({
   active,
+  disabled = false,
   onToggle,
 }: {
   active: boolean;
+  disabled?: boolean;
   onToggle: () => void;
 }) {
   return (
@@ -64,6 +66,7 @@ export function SpeakerButton({
       label="Preview pronunciation control"
       selected={active}
       size="speaker"
+      disabled={disabled}
       onClick={onToggle}
     >
       <SpeakerIcon />

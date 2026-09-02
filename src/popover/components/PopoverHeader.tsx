@@ -8,6 +8,7 @@ export function PopoverHeader({
   phonetic,
   bookmarked,
   speakerActive,
+  speakerDisabled = false,
   onBookmarkToggle,
   onSpeakerToggle,
 }: {
@@ -16,6 +17,7 @@ export function PopoverHeader({
   phonetic?: string;
   bookmarked: boolean;
   speakerActive: boolean;
+  speakerDisabled?: boolean;
   onBookmarkToggle: () => void;
   onSpeakerToggle: () => void;
 }) {
@@ -27,7 +29,11 @@ export function PopoverHeader({
         {variant === "result" && (
           <div className="pronunciation-row">
             <span className="phonetic">{phonetic}</span>
-            <SpeakerButton active={speakerActive} onToggle={onSpeakerToggle} />
+            <SpeakerButton
+              active={speakerActive}
+              disabled={speakerDisabled}
+              onToggle={onSpeakerToggle}
+            />
           </div>
         )}
 

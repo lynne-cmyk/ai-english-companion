@@ -46,6 +46,7 @@ test("POST /ai/explain returns the Mock Provider result", async (t) => {
   assert.deepEqual(await response.json(), {
     word: "component",
     phonetic: "/kəmˈpoʊ.nənt/",
+    part_of_speech: "NOUN",
     translation: "组件",
     general_meaning: "构成较大整体的一部分，或系统中的组成元素。",
     context_explanation:

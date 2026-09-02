@@ -8,6 +8,8 @@ export function TranslatorPopover({
   model,
   bookmarked,
   speakerActive,
+  speakerDisabled = false,
+  retryDisabled = false,
   onBookmarkToggle,
   onSpeakerToggle,
   onRetry,
@@ -15,6 +17,8 @@ export function TranslatorPopover({
   model: PopoverViewModel;
   bookmarked: boolean;
   speakerActive: boolean;
+  speakerDisabled?: boolean;
+  retryDisabled?: boolean;
   onBookmarkToggle: () => void;
   onSpeakerToggle: () => void;
   onRetry: () => void;
@@ -38,6 +42,7 @@ export function TranslatorPopover({
         phonetic={isResult ? model.content.phonetic : undefined}
         bookmarked={bookmarked}
         speakerActive={speakerActive}
+        speakerDisabled={speakerDisabled}
         onBookmarkToggle={onBookmarkToggle}
         onSpeakerToggle={onSpeakerToggle}
       />
@@ -45,8 +50,20 @@ export function TranslatorPopover({
       <div className={`popover-body popover-body--${model.state}`}>
         {model.state === "result" && <ResultView content={model.content} />}
         {model.state === "loading" && <LoadingView />}
-        {model.state === "error" && <StatusView kind="error" onRetry={onRetry} />}
-        {model.state === "offline" && <StatusView kind="offline" onRetry={onRetry} />}
+        {model.state === "error" && (
+          <StatusView
+            kind="error"
+            retryDisabled={retryDisabled}
+            onRetry={onRetry}
+          />
+        )}
+        {model.state === "offline" && (
+          <StatusView
+            kind="offline"
+            retryDisabled={retryDisabled}
+            onRetry={onRetry}
+          />
+        )}
       </div>
     </article>
   );

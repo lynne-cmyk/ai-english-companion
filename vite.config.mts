@@ -9,6 +9,10 @@ export default defineConfig({
       input: {
         main: new URL("./index.html", import.meta.url).pathname,
         popover: new URL("./popover.html", import.meta.url).pathname,
+        popoverWindow: new URL(
+          "./popover-window.html",
+          import.meta.url,
+        ).pathname,
       },
     },
   },
