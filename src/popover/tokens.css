@@ -1,0 +1,29 @@
+:root {
+  --popover-width: 296px;
+  --popover-max-height: 368px;
+  --popover-radius: 12px;
+  --popover-padding-x: 16px;
+
+  --color-primary: #6937a2;
+  --color-context-bg: #f7f7ff;
+  --color-context-border: #ece9f6;
+  --color-status-bg: #f4f5f7;
+  --color-status-border: #e5e7eb;
+  --color-status-accent: #6e6c70;
+  --color-status-hover: #ededed;
+  --color-border-default: #e5e7eb;
+
+  --color-text-strong: #202938;
+  --color-text-body: #3f4652;
+  --color-text-muted: #7a7f89;
+  --color-text-faint: #a9adb4;
+  --color-skeleton-start: #e1e3e5;
+  --color-skeleton-end: #f0f1f2;
+  --color-preview-bg: #eef0f3;
+
+  --font-english: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-chinese: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+
+  --shadow-popover: 0 14px 34px rgb(31 41 55 / 14%), 0 3px 8px rgb(31 41 55 / 8%);
+  --focus-ring: 0 0 0 2px #ffffff, 0 0 0 4px var(--color-primary);
+}
