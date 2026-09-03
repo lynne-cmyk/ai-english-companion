@@ -100,3 +100,44 @@ test("POST /ai/explain maps an AI timeout to HTTP 504", async (t) => {
     code: "TIMEOUT",
   });
 });
+
+test("Provider errors preserve safe codes and expose upstream status only for HTTP errors", async (t) => {
+  const cases = [
+    { code: "HTTP_ERROR", upstream: 429, status: 502 },
+    { code: "HTTP_ERROR", upstream: 504, status: 502 },
+    { code: "HTTP_ERROR", upstream: 401, status: 502 },
+    { code: "HTTP_ERROR", upstream: 403, status: 502 },
+    { code: "HTTP_ERROR", upstream: undefined, status: 502 },
+    { code: "NETWORK_ERROR", upstream: undefined, status: 503 },
+    { code: "MISSING_API_KEY", upstream: undefined, status: 503 },
+    { code: "INVALID_RESPONSE", upstream: undefined, status: 502 },
+    { code: "TIMEOUT", upstream: 504, status: 504 },
+  ] as const;
+  for (const item of cases) {
+    await t.test(`${item.code}:${String(item.upstream)}`, async (t) => {
+      const provider: AIProvider = {
+        name: "failure-test",
+        async generateExplanation() {
+          throw new AIProviderError(item.code, "private provider details", {
+            httpStatus: item.upstream,
+            cause: new Error("private stack"),
+          });
+        },
+      };
+      const { server, baseUrl } = await startTestServer(provider);
+      t.after(() => server.close());
+      const response = await fetch(`${baseUrl}/ai/explain`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word: "component", source_app: "Cursor", user_goal: "learn" }),
+      });
+      assert.equal(response.status, item.status);
+      assert.deepEqual(await response.json(), {
+        error: "AI provider failed",
+        code: item.code,
+        ...(item.code === "HTTP_ERROR" && item.upstream !== undefined
+          ? { upstream_status: item.upstream } : {}),
+      });
+    });
+  }
+});

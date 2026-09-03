@@ -10,6 +10,7 @@ const channels: PopoverIpcChannels = {
   ready: "translator-popover:ready",
   state: "translator-popover:state",
   contentHeight: "translator-popover:content-height",
+  retry: "translator-popover:retry",
 };
 
 const bridge: TranslatorPopoverBridge = {
@@ -32,6 +33,9 @@ const bridge: TranslatorPopoverBridge = {
   },
   reportContentHeight(payload: PopoverContentHeightPayload) {
     ipcRenderer.send(channels.contentHeight, payload);
+  },
+  retry(failedRequestId: number) {
+    ipcRenderer.send(channels.retry, failedRequestId);
   },
 };
 

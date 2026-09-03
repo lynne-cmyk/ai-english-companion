@@ -43,12 +43,14 @@ AI 必须返回一个合法 JSON 对象，不得添加 Markdown 代码块、标�
 | `word` | string | 原始英文单词。 |
 | `phonetic` | string | 常用 IPA 音标；无法可靠确定时返回空字符串。 |
 | `part_of_speech` | string | 结合当前语境判断的主要词性，使用简洁大写标签，例如 `NOUN`、`VERB`、`ADJ`。无法可靠判断时返回空字符串。 |
-| `translation` | string | 最简洁、最常用的中文释义。 |
+| `translation` | string | 简洁的简体中文（zh-CN）词义，不得为空或纯英文。技术名词、产品名及专有名词可保留英文拼写，但必须包含简体中文解释或类别。 |
 | `general_meaning` | string | 不依赖应用场景的通用含义，使用简短中文说明。 |
 | `context_explanation` | string | 结合 `source_app` 给出的场景解释。应表达为常见用法，不得虚构用户正在阅读的具体内容。 |
 | `example` | string | 一个简短、自然，并与当前场景相关的英文例句。 |
 
 所有字段必须存在，字段值均为字符串。客户端不应依赖字段顺序。
+
+Provider 对 `translation` 做最低限度校验：`translation.trim()` 非空，且包含至少一个 Unicode Han 字符（`/\p{Script=Han}/u`）。允许中英混合、数字及标点；校验不修改返回值，不做严格语言识别或繁简转换。简体中文由 Prompt 明确要求，Han 检查本身不区分繁简体。校验失败使用已有 `INVALID_RESPONSE` 错误。
 
 为兼容旧 Backend 响应，客户端在运行时将 `part_of_speech` 视为可选字段。字段缺失、为空或不在支持的标签集合中时，仅隐藏词性标签，不影响其他解释内容。
 
@@ -82,6 +84,8 @@ You will receive a JSON object with:
 
 Explain the word in concise Chinese. Provide its phonetic transcription, primary part of speech, a short translation, its general meaning, a context-aware explanation, and one short English example.
 
+The translation field must contain a concise Simplified Chinese (zh-CN) lexical meaning. It must not be English-only, empty, or whitespace-only. Technical terms, product names, and proper nouns may retain their original English spelling, but must include a concise Simplified Chinese explanation or category. Valid examples: "组件", "React 组件", "Kubernetes（容器编排平台）", "Git 分支". Invalid examples: "component", "frontend framework", "", "   ". Do not put English explanatory sentences in translation; use the example field for the English example.
+
 Return part_of_speech as one concise uppercase label: NOUN, VERB, ADJ, ADV, PREP, PRON, CONJ, DET, ART, INTJ, AUX, MODAL, NUM, or PART. Choose the primary part of speech for the supplied context. If it cannot be determined reliably, return an empty string.
 
 Use source_app only as a contextual hint. For example, a word copied in Cursor may have a software-development meaning, while a word copied in Figma may have a product-design meaning. Do not claim to know the exact sentence, document, screen, or user intention. If the app does not provide enough context, give a cautious explanation of the most likely usage.
@@ -101,7 +105,7 @@ The JSON schema is:
   "example": "string"
 }
 
-All values must be strings. Preserve the input word in the word field. If a value cannot be determined reliably, return an empty string for that field instead of inventing information.
+All values must be strings. Preserve the input word in the word field. Do not invent information. Empty strings are permitted only for fields other than translation when their values cannot be determined reliably.
 ```
 
 ## 5. Error Handling Strategy

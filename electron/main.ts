@@ -1,6 +1,14 @@
-import { app, BrowserWindow, clipboard, ipcMain, screen } from "electron";
+import { app, BrowserWindow, clipboard, ipcMain, net, screen } from "electron";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
+import {
+  BackendTransportError,
+  InvalidExplanationError,
+  classifyFailure,
+  readBackendFailure,
+  type FailureInfo,
+  type RequestSnapshot,
+} from "./aiRecovery";
 import {
   POPOVER_IPC_CHANNELS,
   type ExplanationResult,
@@ -15,6 +23,11 @@ let clipboardTimer: NodeJS.Timeout | null = null;
 let activeAIRequestController: AbortController | null = null;
 let latestAIRequestId = 0;
 let dismissedPopoverRequestId: number | null = null;
+let failedRequest: {
+  requestId: number;
+  snapshot: RequestSnapshot;
+  failure: FailureInfo;
+} | null = null;
 let reactPopoverReady = false;
 let pendingReactPopoverState: PopoverStatePayload | null = null;
 let floatingWindowAnchor: { x: number; y: number } | null = null;
@@ -64,9 +77,10 @@ type FloatingWindowState =
       currentApplication: string;
     }
   | {
-      status: "error";
+      status: "error" | "offline";
       word: string;
       currentApplication: string;
+      failure: FailureInfo;
     };
 
 const floatingWindowHtml = `<!doctype html>
@@ -546,7 +560,11 @@ async function showFloatingState(
   requestId: number,
 ) {
   if (POPOVER_RENDERER === "legacy") {
-    await showLegacyFloatingState(state, requestId);
+    // Keep the legacy HTML unchanged; only React has the Offline/Retry UI.
+    await showLegacyFloatingState(
+      state.status === "offline" ? { ...state, status: "error" } : state,
+      requestId,
+    );
     return;
   }
 
@@ -567,11 +585,40 @@ function isPopoverContentHeightPayload(
     Number.isFinite(payload.height) &&
     (payload.status === "loading" ||
       payload.status === "result" ||
-      payload.status === "error")
+      payload.status === "error" ||
+      payload.status === "offline")
   );
 }
 
 function registerReactPopoverIpc() {
+  ipcMain.on(POPOVER_IPC_CHANNELS.retry, (event, failedRequestId: unknown) => {
+    if (
+      applicationIsQuitting ||
+      floatingWindow === null ||
+      POPOVER_RENDERER !== "react" ||
+      event.sender !== floatingWindow.webContents ||
+      event.senderFrame !== floatingWindow.webContents.mainFrame ||
+      !floatingWindow.isVisible() ||
+      typeof failedRequestId !== "number" ||
+      !Number.isSafeInteger(failedRequestId) ||
+      failedRequestId <= 0 ||
+      failedRequestId !== latestAIRequestId ||
+      dismissedPopoverRequestId === failedRequestId ||
+      failedRequest?.requestId !== failedRequestId ||
+      !failedRequest.failure.retryable ||
+      pendingReactPopoverState?.requestId !== failedRequestId ||
+      (pendingReactPopoverState.status !== "error" &&
+        pendingReactPopoverState.status !== "offline")
+    ) {
+      return;
+    }
+
+    const snapshot = failedRequest.snapshot;
+    // Invalidate the old Retry ID synchronously, before any asynchronous work.
+    const requestId = beginRequest(snapshot.word, snapshot.cursorAnchor);
+    void executeAIRequest(snapshot, requestId);
+  });
+
   ipcMain.on(POPOVER_IPC_CHANNELS.ready, (event) => {
     if (
       floatingWindow === null ||
@@ -656,29 +703,39 @@ function registerReactPopoverIpc() {
 }
 
 async function requestAIExplanation(
-  word: string,
-  currentApplication: string,
+  snapshot: RequestSnapshot,
   signal: AbortSignal,
 ) {
-  const response = await fetch(BACKEND_EXPLAIN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      word,
-      source_app: currentApplication,
-      user_goal: DEFAULT_USER_GOAL,
-    }),
-    signal,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Backend returned HTTP ${response.status}`);
+  let response: Response;
+  try {
+    response = await fetch(BACKEND_EXPLAIN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        word: snapshot.word,
+        source_app: snapshot.source_app,
+        user_goal: snapshot.user_goal,
+      }),
+      signal,
+    });
+  } catch (error) {
+    throw new BackendTransportError(error);
   }
 
-  const result: unknown = await response.json();
+  if (!response.ok) {
+    throw await readBackendFailure(response);
+  }
 
-  if (!isExplanationResult(result) || result.word !== word) {
-    throw new Error("Backend returned an invalid explanation result");
+  let result: unknown;
+  try {
+    result = await response.json();
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new InvalidExplanationError();
+    throw new BackendTransportError(error);
+  }
+
+  if (!isExplanationResult(result) || result.word !== snapshot.word) {
+    throw new InvalidExplanationError();
   }
 
   const partOfSpeech = normalizePartOfSpeech(result.part_of_speech);
@@ -689,42 +746,68 @@ async function requestAIExplanation(
     : { ...requiredResult, part_of_speech: partOfSpeech };
 }
 
-async function handleDetectedWord(word: string) {
+function beginRequest(word: string, anchor: Readonly<{ x: number; y: number }>) {
   const requestId = ++latestAIRequestId;
-  let currentApplication = "Detecting...";
 
   console.log(
     `[floating] Request started id=${requestId} word=${word} dismissedBefore=${String(dismissedPopoverRequestId)} visibleBeforeLoading=${String(floatingWindow?.isVisible() ?? false)}.`,
   );
   dismissedPopoverRequestId = null;
+  failedRequest = null;
   console.log(
     `[floating] Request reset id=${requestId} dismissedAfter=${String(dismissedPopoverRequestId)}.`,
   );
-  floatingWindowAnchor = screen.getCursorScreenPoint();
+  floatingWindowAnchor = { ...anchor };
   activeAIRequestController?.abort();
   activeAIRequestController = null;
+  return requestId;
+}
 
+async function handleDetectedWord(word: string) {
+  const anchor = screen.getCursorScreenPoint();
+  const requestId = beginRequest(word, anchor);
+  let snapshot: RequestSnapshot = {
+    word,
+    source_app: "Detecting...",
+    user_goal: DEFAULT_USER_GOAL,
+    cursorAnchor: { ...anchor },
+  };
   try {
     await showFloatingState(
-      { status: "loading", word, currentApplication },
+      { status: "loading", word, currentApplication: snapshot.source_app },
       requestId,
     );
 
-    currentApplication = await getFrontmostApplicationName();
+    const currentApplication = await getFrontmostApplicationName();
 
     if (requestId !== latestAIRequestId) {
       return;
     }
 
+    snapshot = { ...snapshot, source_app: currentApplication };
+    await executeAIRequest(snapshot, requestId);
+  } catch (error) {
+    await showRequestFailure(error, snapshot, requestId, false);
+  }
+}
+
+async function executeAIRequest(snapshot: RequestSnapshot, requestId: number) {
+  let timedOut = false;
+  try {
     await showFloatingState(
-      { status: "loading", word, currentApplication },
+      { status: "loading", word: snapshot.word, currentApplication: snapshot.source_app },
       requestId,
     );
+
+    if (requestId !== latestAIRequestId || applicationIsQuitting) return;
 
     const requestController = new AbortController();
     activeAIRequestController = requestController;
     const timeout = setTimeout(
-      () => requestController.abort(),
+      () => {
+        timedOut = true;
+        requestController.abort();
+      },
       AI_REQUEST_TIMEOUT_MS,
     );
 
@@ -732,8 +815,7 @@ async function handleDetectedWord(word: string) {
 
     try {
       result = await requestAIExplanation(
-        word,
-        currentApplication,
+        snapshot,
         requestController.signal,
       );
     } finally {
@@ -744,30 +826,46 @@ async function handleDetectedWord(word: string) {
       }
     }
 
-    if (requestId !== latestAIRequestId) {
+    if (requestId !== latestAIRequestId || applicationIsQuitting) {
       return;
     }
 
     await showFloatingState(
-      { status: "result", result, currentApplication },
+      { status: "result", result, currentApplication: snapshot.source_app },
       requestId,
     );
-    console.log(`[ai] Explanation displayed for: ${word}`);
+    console.log(`[ai] Explanation displayed for: ${snapshot.word}`);
   } catch (error) {
-    if (requestId !== latestAIRequestId) {
-      return;
-    }
+    await showRequestFailure(error, snapshot, requestId, timedOut);
+  }
+}
 
-    console.error(`[ai] Explanation failed for ${word}:`, error);
+async function showRequestFailure(
+  error: unknown,
+  snapshot: RequestSnapshot,
+  requestId: number,
+  timedOut: boolean,
+) {
+  // Supersession is not a user-visible failure and must not replace the snapshot.
+  if (requestId !== latestAIRequestId || applicationIsQuitting) return;
 
-    try {
-      await showFloatingState(
-        { status: "error", word, currentApplication },
-        requestId,
-      );
-    } catch (windowError) {
-      console.error("[floating] Failed to show error state:", windowError);
-    }
+  let deviceOnline: boolean | undefined;
+  try {
+    deviceOnline = net.isOnline();
+  } catch {
+    // Uncertain device state is never evidence of Offline.
+  }
+  const classified = classifyFailure(error, timedOut, deviceOnline);
+  failedRequest = { requestId, snapshot, failure: classified.failure };
+  console.error(`[ai] Request ${requestId} failed: ${classified.failure.code}`);
+  try {
+    await showFloatingState({
+      ...classified,
+      word: snapshot.word,
+      currentApplication: snapshot.source_app,
+    }, requestId);
+  } catch (windowError) {
+    console.error("[floating] Failed to show error state:", windowError);
   }
 }
 

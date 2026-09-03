@@ -73,8 +73,44 @@ test("DeepSeekAIProvider builds the expected request and validates the result", 
   assert.equal(requestBody.model, "deepseek-v4-flash");
   assert.deepEqual(requestBody.response_format, { type: "json_object" });
   assert.equal(requestBody.messages[0]?.content, DEEPSEEK_SYSTEM_PROMPT);
+  assert.match(DEEPSEEK_SYSTEM_PROMPT, /Simplified Chinese \(zh-CN\) lexical meaning/);
+  assert.match(DEEPSEEK_SYSTEM_PROMPT, /must not be English-only, empty, or whitespace-only/);
   assert.deepEqual(JSON.parse(requestBody.messages[1]?.content ?? ""), input);
 });
+
+for (const translation of [
+  "组件",
+  "React 组件",
+  "Kubernetes（容器编排平台）",
+  "Git 分支",
+  "React 19 组件（UI）",
+  "  组件 \t",
+  "組件",
+]) {
+  test(`DeepSeekAIProvider preserves an accepted translation: ${JSON.stringify(translation)}`, async () => {
+    const expectedResult = { ...explanation, translation };
+    const provider = new DeepSeekAIProvider({
+      environment: { DEEPSEEK_API_KEY: "test-api-key" },
+      fetchImplementation: async () =>
+        chatCompletionResponse(JSON.stringify(expectedResult)),
+    });
+
+    // Includes whitespace and Traditional Han to guard against mutation/conversion.
+    assert.deepEqual(await provider.generateExplanation(input), expectedResult);
+  });
+}
+
+for (const translation of ["component", "frontend framework", "", " \t\n "]) {
+  test(`DeepSeekAIProvider rejects an invalid translation: ${JSON.stringify(translation)}`, async () => {
+    const provider = new DeepSeekAIProvider({
+      environment: { DEEPSEEK_API_KEY: "test-api-key" },
+      fetchImplementation: async () =>
+        chatCompletionResponse(JSON.stringify({ ...explanation, translation })),
+    });
+
+    await expectProviderError(provider.generateExplanation(input), "INVALID_RESPONSE");
+  });
+}
 
 test("DeepSeekAIProvider rejects a missing API key without making a request", async () => {
   let requestWasMade = false;

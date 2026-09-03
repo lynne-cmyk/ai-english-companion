@@ -140,10 +140,20 @@ export function PopoverRenderer() {
         bookmarked={bookmarked}
         speakerActive={false}
         speakerDisabled
-        retryDisabled
+        retryDisabled={
+          payload === null ||
+          (payload.status !== "error" && payload.status !== "offline") ||
+          !payload.failure.retryable
+        }
         onBookmarkToggle={() => setBookmarked((value) => !value)}
         onSpeakerToggle={() => undefined}
-        onRetry={() => undefined}
+        onRetry={() => {
+          if (payload !== null &&
+            (payload.status === "error" || payload.status === "offline") &&
+            payload.failure.retryable) {
+            window.translatorPopover.retry(payload.requestId);
+          }
+        }}
       />
     </div>
   );

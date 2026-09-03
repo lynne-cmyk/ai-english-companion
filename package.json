@@ -8,6 +8,7 @@
     "dev:popover": "vite --host 127.0.0.1 --port 4173 --strictPort",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
+    "test:recovery": "npm run build:main && node --test dist-electron/aiRecovery.test.js dist-electron/recoveryLifecycle.test.js",
     "build:native": "mkdir -p dist-native && xcrun clang -fobjc-arc -mmacosx-version-min=14.0 native/FrontmostApp.m -framework AppKit -o dist-native/frontmost-app && xcrun clang -fobjc-arc -mmacosx-version-min=14.0 native/GlobalMouseMonitor.m -framework ApplicationServices -o dist-native/global-mouse-monitor",
     "build": "npm run build:renderer && npm run build:main && npm run build:native",
     "start": "npm run build && electron .",

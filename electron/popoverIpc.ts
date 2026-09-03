@@ -1,7 +1,10 @@
+import type { FailureInfo } from "./aiRecovery";
+
 export const POPOVER_IPC_CHANNELS = {
   ready: "translator-popover:ready",
   state: "translator-popover:state",
   contentHeight: "translator-popover:content-height",
+  retry: "translator-popover:retry",
 } as const;
 
 export type PopoverIpcChannels = typeof POPOVER_IPC_CHANNELS;
@@ -31,8 +34,9 @@ export type PopoverStatePayload =
       result: ExplanationResult;
     })
   | (PopoverStateBase & {
-      status: "error";
+      status: "error" | "offline";
       word: string;
+      failure: FailureInfo;
     });
 
 export interface PopoverContentHeightPayload {
@@ -45,4 +49,5 @@ export interface TranslatorPopoverBridge {
   ready: () => void;
   onState: (listener: (payload: PopoverStatePayload) => void) => () => void;
   reportContentHeight: (payload: PopoverContentHeightPayload) => void;
+  retry: (failedRequestId: number) => void;
 }

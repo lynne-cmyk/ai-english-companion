@@ -107,6 +107,12 @@ export function createApiServer(aiProvider: AIProvider) {
           sendJson(response, getProviderErrorStatus(error), {
             error: "AI provider failed",
             code: error.code,
+            ...(error.code === "HTTP_ERROR" &&
+            typeof error.httpStatus === "number" &&
+            Number.isInteger(error.httpStatus) &&
+            error.httpStatus >= 400 && error.httpStatus <= 599
+              ? { upstream_status: error.httpStatus }
+              : {}),
           });
         } else {
           sendJson(response, 500, { error: "AI provider failed" });

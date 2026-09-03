@@ -20,6 +20,8 @@ You will receive a JSON object with:
 
 Explain the word in concise Chinese. Provide its phonetic transcription, primary part of speech, a short translation, its general meaning, a context-aware explanation, and one short English example.
 
+The translation field must contain a concise Simplified Chinese (zh-CN) lexical meaning. It must not be English-only, empty, or whitespace-only. Technical terms, product names, and proper nouns may retain their original English spelling, but must include a concise Simplified Chinese explanation or category. Valid examples: "组件", "React 组件", "Kubernetes（容器编排平台）", "Git 分支". Invalid examples: "component", "frontend framework", "", "   ". Do not put English explanatory sentences in translation; use the example field for the English example.
+
 Return part_of_speech as one concise uppercase label: NOUN, VERB, ADJ, ADV, PREP, PRON, CONJ, DET, ART, INTJ, AUX, MODAL, NUM, or PART. Choose the primary part of speech for the supplied context. If it cannot be determined reliably, return an empty string.
 
 Use source_app only as a contextual hint. For example, a word copied in Cursor may have a software-development meaning, while a word copied in Figma may have a product-design meaning. Do not claim to know the exact sentence, document, screen, or user intention. If the app does not provide enough context, give a cautious explanation of the most likely usage.
@@ -39,7 +41,7 @@ The JSON schema is:
   "example": "string"
 }
 
-All values must be strings. Preserve the input word in the word field. If a value cannot be determined reliably, return an empty string for that field instead of inventing information.`;
+All values must be strings. Preserve the input word in the word field. Do not invent information. Empty strings are permitted only for fields other than translation when their values cannot be determined reliably.`;
 
 interface DeepSeekProviderOptions {
   environment?: NodeJS.ProcessEnv;
@@ -147,6 +149,17 @@ function parseExplanationResult(
     throw new AIProviderError(
       "INVALID_RESPONSE",
       "DeepSeek response did not preserve the input word",
+    );
+  }
+
+  // A minimal Chinese-content guard, not language detection or script conversion.
+  if (
+    result.translation.trim() === "" ||
+    !/\p{Script=Han}/u.test(result.translation)
+  ) {
+    throw new AIProviderError(
+      "INVALID_RESPONSE",
+      "DeepSeek translation must be non-empty and contain a Han character",
     );
   }
 
