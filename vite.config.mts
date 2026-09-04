@@ -13,6 +13,10 @@ export default defineConfig({
           "./popover-window.html",
           import.meta.url,
         ).pathname,
+        selectionAction: new URL(
+          "./selection-action.html",
+          import.meta.url,
+        ).pathname,
       },
     },
   },
