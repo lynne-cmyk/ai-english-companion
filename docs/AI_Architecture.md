@@ -23,6 +23,7 @@ v0.1 的 AI 输出结构以 `docs/AI_Prompt_Spec.md` 为准。客户端不直接
 Electron 客户端负责：
 
 - 在后台检测 macOS 系统剪贴板内容变化。
+- 通过公共 macOS Accessibility 信息验证鼠标双击选中的单个英文单词，并显示 Selection Action Button。
 - 过滤输入，只处理符合规则的单个英文单词。
 - 获取复制发生时的当前前台应用名称。
 - 在鼠标附近创建或更新轻量悬浮窗口。
@@ -52,18 +53,18 @@ Backend API 负责：
 
 ## 4. AI Request Flow
 
-完整请求流程：
+生产客户端有两个触发入口，二者进入同一请求流程：
 
 ```text
-用户复制英文
+Clipboard Trigger
+复制单个英文单词 → 验证剪贴板内容与当前 App Context
+                         ↘
+                          共享 RequestSnapshot / 请求生命周期
+                         ↗
+Selection Trigger
+双击单个英文单词 → AX 验证 → ✦ → 用户点击 → 消费可信 SelectionSnapshot
     ↓
-Electron 检测剪贴板变化并验证英文单词
-    ↓
-获取 App Context
-    ↓
-Electron 立即显示基础悬浮窗口
-    ↓
-请求 Backend API
+显示 Translator Popover Loading → 请求 Backend API
     ↓
 Backend 验证请求并调用 DeepSeek API
     ↓
@@ -75,6 +76,10 @@ Electron 校验响应
     ↓
 更新现有悬浮窗口
 ```
+
+两个入口共享 `latestAIRequestId`、`AbortController`、旧响应抑制、Loading/Result/Error/Offline、Retry、按请求记录的关闭保护、`RequestSnapshot`、Backend 请求路径和同一个 Translator Popover。较新的 clipboard 或 selection 请求会中止并取代较旧请求。
+
+PASS 3 Selection Trigger 仅支持鼠标双击选择一个 ASCII 英文单词。拖动选择、键盘选择、短语/多词文本和 Figma 设计画布兼容性均为后续阶段，不代表永久不支持。
 
 建议的请求数据：
 
@@ -101,6 +106,10 @@ Electron 校验响应
 ```
 
 AI 请求不应阻塞基础悬浮窗口显示。如果用户在请求完成前复制了新单词，客户端必须忽略旧单词的迟到响应。
+
+### Mock Provider（集成 QA）
+
+Mock Provider 是无网络依赖的确定性 QA 工具，不用于验证词典或翻译质量。它返回精确的 `input.word`（保留大小写），在上下文解释中使用实际 `input.source_app`，其余语义字段使用明确、稳定的测试内容，不再包含写死的 `component` 或 `Cursor` 语义。
 
 ## 5. Security Considerations
 

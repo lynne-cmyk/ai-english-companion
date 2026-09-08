@@ -13,7 +13,11 @@ function createHarness() {
   let appDetectionCount = 0;
   let online: boolean | undefined = true;
   let clipboardReads = 0;
+  let cursorReads = 0;
+  const selectionDismissals: string[] = [];
+  let selectionControllerStopped = false;
   const handlers = new Map<string, (event: unknown, payload?: unknown) => void>();
+  const appHandlers = new Map<string, () => void>();
   const states: PopoverStatePayload[] = [];
   const requests: Array<{
     body: { word: string; source_app: string; user_goal: string };
@@ -61,7 +65,8 @@ function createHarness() {
     app: {
       requestSingleInstanceLock: () => true,
       whenReady: () => new Promise<void>(() => undefined),
-      on() {}, quit() {},
+      on(name: string, handler: () => void) { appHandlers.set(name, handler); },
+      quit() {},
     },
     BrowserWindow: function (options: Record<string, unknown>) {
       window.options = options;
@@ -71,13 +76,18 @@ function createHarness() {
     clipboard: { readText: () => { clipboardReads++; return "ignored"; } },
     net: { isOnline: () => { if (online === undefined) throw new Error("unknown"); return online; } },
     screen: {
-      getCursorScreenPoint: () => ({ ...cursor }),
+      getCursorScreenPoint: () => {
+        cursorReads++;
+        return { ...cursor };
+      },
       getDisplayNearestPoint: () => ({ workArea: { x: 0, y: 0, width: 1600, height: 1000 } }),
     },
   };
   const exported: Record<string, any> = {};
   vm.runInNewContext(readFileSync(path.join(__dirname, "main.js"), "utf8") + `
     exports.detectWord = handleDetectedWord;
+    exports.acceptSelection = handleAcceptedSelection;
+    exports.setSelectionController = (value) => { selectionActionController = value; };
     exports.mouseDown = handleGlobalMouseDown;
     exports.state = () => ({ latestAIRequestId, dismissedPopoverRequestId, failedRequest });
     registerReactPopoverIpc();
@@ -106,9 +116,19 @@ function createHarness() {
       requests.push({ body: JSON.parse(String(init.body)), signal: init.signal!, resolve, reject });
     }),
   });
+  exported.setSelectionController({
+    dismissForExternalTrigger(reason: string) {
+      selectionDismissals.push(reason);
+    },
+    stop() {
+      selectionControllerStopped = true;
+    },
+  });
   return {
     window, states, requests, timers,
     detect: (word: string): Promise<void> => exported.detectWord(word),
+    acceptSelection: (snapshot: Record<string, unknown>): number | null =>
+      exported.acceptSelection(snapshot),
     retry: (value: unknown, overrideEvent?: unknown) => handlers.get(channels.retry)?.(overrideEvent ?? event(), value),
     state: () => exported.state(),
     dismiss: () => { cursor = { x: 1500, y: 900 }; exported.mouseDown(); },
@@ -117,6 +137,12 @@ function createHarness() {
     setContext: (name: string, point: { x: number; y: number }) => { appName = name; cursor = point; },
     setOnline: (value: boolean | undefined) => { online = value; },
     counts: () => ({ appDetectionCount, clipboardReads }),
+    cursorReadCount: () => cursorReads,
+    selectionLifecycle: () => ({
+      dismissals: [...selectionDismissals],
+      stopped: selectionControllerStopped,
+    }),
+    quit: () => appHandlers.get("will-quit")?.(),
     latest: () => states.at(-1)!,
     height,
   };
@@ -128,6 +154,25 @@ async function flush() {
 
 function success(word: string) {
   return Response.json({ word, phonetic: "", translation: "释义", general_meaning: "含义", context_explanation: "语境", example: "Example" });
+}
+
+function selectionSnapshot(
+  text: string,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    selectionId: "selection-1",
+    sampleId: 1,
+    text,
+    sourceApp: "Google Chrome",
+    pid: 321,
+    bundleId: "com.google.Chrome",
+    bounds: { x: 200, y: 100, width: 50, height: 20 },
+    mousePosition: { x: 245, y: 110 },
+    capturedAt: 123.5,
+    consumed: true,
+    ...overrides,
+  };
 }
 
 async function failFirst(h: ReturnType<typeof createHarness>, word = "component") {
@@ -338,4 +383,116 @@ test("invalid successful payload and loopback refusal remain Error in the real m
       assert.equal(state.failure.retryable, true);
     }
   }
+});
+
+test("accepted selection trims whitespace, preserves case, context, and selection anchor", async () => {
+  const h = createHarness();
+  const requestId = h.acceptSelection(selectionSnapshot("  Component\n"));
+  assert.equal(requestId, 1);
+  await flush();
+
+  assert.equal(h.requests.length, 1);
+  assert.deepEqual(h.requests[0].body, {
+    word: "Component",
+    source_app: "Google Chrome",
+    user_goal: "learn English while working",
+  });
+  assert.deepEqual(h.counts(), { appDetectionCount: 0, clipboardReads: 0 });
+  assert.equal(h.cursorReadCount(), 0);
+  assert.equal(h.getBounds().x, 266);
+  assert.equal(h.getBounds().y, 126);
+
+  h.requests[0].resolve(success("Component"));
+  await flush();
+  assert.equal(h.latest().status, "result");
+  assert.equal(h.latest().requestId, requestId);
+});
+
+test("multi-word and empty selected text are rejected before Backend", async () => {
+  const h = createHarness();
+  for (const value of ["two words", "\n\t ", "component-name", "123"]) {
+    assert.equal(h.acceptSelection(selectionSnapshot(value)), null);
+  }
+  await flush();
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.state().latestAIRequestId, 0);
+  assert.deepEqual(h.counts(), { appDetectionCount: 0, clipboardReads: 0 });
+});
+
+test("clipboard and selection requests supersede each other through one request counter", async () => {
+  const first = createHarness();
+  const clipboardPending = first.detect("component");
+  await flush();
+  const selectionId = first.acceptSelection(
+    selectionSnapshot("Dependency", { selectionId: "selection-2", sampleId: 2 }),
+  );
+  await flush();
+  assert.equal(selectionId, 2);
+  assert.equal(first.requests[0].signal.aborted, true);
+  first.requests[1].resolve(success("Dependency"));
+  first.requests[0].resolve(success("component"));
+  await clipboardPending;
+  await flush();
+  assert.equal(first.latest().requestId, 2);
+  assert.equal(first.latest().status, "result");
+
+  const second = createHarness();
+  const initialSelectionId = second.acceptSelection(selectionSnapshot("Component"));
+  await flush();
+  second.setContext("Cursor", { x: 500, y: 400 });
+  const laterClipboard = second.detect("repository");
+  await flush();
+  assert.equal(initialSelectionId, 1);
+  assert.equal(second.state().latestAIRequestId, 2);
+  assert.equal(second.requests[0].signal.aborted, true);
+  assert.deepEqual(second.selectionLifecycle().dismissals, [
+    "clipboard_request_started",
+  ]);
+  second.requests[1].resolve(success("repository"));
+  second.requests[0].resolve(success("Component"));
+  await laterClipboard;
+  await flush();
+  assert.equal(second.latest().requestId, 2);
+  assert.equal(second.latest().currentApplication, "Cursor");
+});
+
+test("Retry after selection failure preserves its source app and anchor", async () => {
+  const h = createHarness();
+  const originalId = h.acceptSelection(selectionSnapshot("Component"));
+  await flush();
+  h.requests[0].resolve(
+    Response.json({ error: "AI provider failed", code: "TIMEOUT" }, { status: 504 }),
+  );
+  await flush();
+  assert.equal(h.latest().status, "error");
+  const originalBounds = h.getBounds();
+
+  h.setContext("Cursor", { x: 900, y: 700 });
+  h.retry(originalId);
+  await flush();
+  assert.equal(h.state().latestAIRequestId, 2);
+  assert.deepEqual(h.requests[1].body, h.requests[0].body);
+  assert.deepEqual(h.getBounds(), originalBounds);
+  assert.deepEqual(h.counts(), { appDetectionCount: 0, clipboardReads: 0 });
+});
+
+test("dismissal during selection Loading prevents the late result from re-showing", async () => {
+  const h = createHarness();
+  const requestId = h.acceptSelection(selectionSnapshot("Component"));
+  await flush();
+  assert.equal(h.window.visible, true);
+  h.dismiss();
+  assert.equal(h.window.visible, false);
+  h.requests[0].resolve(success("Component"));
+  await flush();
+  assert.equal(h.latest().requestId, requestId);
+  assert.equal(h.latest().status, "result");
+  assert.equal(h.window.visible, false);
+});
+
+test("production shutdown stops the shared SelectionProbe controller", () => {
+  const h = createHarness();
+  assert.equal(h.selectionLifecycle().stopped, false);
+  h.quit();
+  assert.equal(h.selectionLifecycle().stopped, true);
 });

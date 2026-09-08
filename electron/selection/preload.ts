@@ -4,8 +4,8 @@ import type {
   SelectionActionRendererState,
 } from "./contracts";
 
-// Keep runtime channel values in this single preload file. Sandboxed Electron
-// preloads cannot require local CommonJS modules unless they are bundled.
+// Sandboxed preloads cannot require local CommonJS modules. Keep the runtime
+// values here while sharing only compile-time types with the main process.
 const SELECTION_ACTION_CHANNELS = {
   ready: "selection-action:ready",
   state: "selection-action:state",
@@ -29,7 +29,8 @@ const bridge: SelectionActionBridge = {
       if (isRendererState(value)) listener(value);
     };
     ipcRenderer.on(SELECTION_ACTION_CHANNELS.state, handler);
-    return () => ipcRenderer.removeListener(SELECTION_ACTION_CHANNELS.state, handler);
+    return () =>
+      ipcRenderer.removeListener(SELECTION_ACTION_CHANNELS.state, handler);
   },
   pointerDown(selectionId) {
     if (typeof selectionId === "string" && selectionId.length <= 128) {
@@ -47,11 +48,19 @@ const bridge: SelectionActionBridge = {
       selectionId.length <= 128 &&
       (phase === "mounted" || phase === "settled") &&
       metrics &&
-      [metrics.width, metrics.height, metrics.opacity, metrics.devicePixelRatio].every(
-        (value) => typeof value === "number" && Number.isFinite(value),
-      )
+      [
+        metrics.width,
+        metrics.height,
+        metrics.opacity,
+        metrics.devicePixelRatio,
+      ].every((value) => typeof value === "number" && Number.isFinite(value))
     ) {
-      ipcRenderer.send(SELECTION_ACTION_CHANNELS.rendered, selectionId, phase, metrics);
+      ipcRenderer.send(
+        SELECTION_ACTION_CHANNELS.rendered,
+        selectionId,
+        phase,
+        metrics,
+      );
     }
   },
   ready() {

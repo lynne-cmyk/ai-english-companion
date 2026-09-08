@@ -22,6 +22,8 @@ static const CFIndex kChildBatchSize = 8;
 static const NSUInteger kTargetMaxDepth = 3;
 static const NSUInteger kTargetMaxNewNodes = 32;
 static const NSUInteger kTargetMaxAttributeChecks = 6;
+// Intent threshold in macOS global point coordinates. Retina scaling is not applied.
+static const double kDragSelectionThresholdPoints = 4.0;
 static BOOL targetContainerMode = NO; // Opt-in command-line experiment, never production.
 
 // One query owns all candidates; no AX elements or selections are cached across samples.
@@ -45,6 +47,46 @@ static BOOL pendingReady = NO;
 static BOOL queryRunning = NO;
 static dispatch_queue_t queryQueue;
 static volatile sig_atomic_t stopRequested = 0;
+static CFMachPortRef mouseEventTap = NULL;
+static CFRunLoopSourceRef mouseEventTapSource = NULL;
+static uint64_t gestureGenerationCounter = 0;
+static uint64_t activeGestureGeneration = 0;
+static BOOL trackingLeftGesture = NO;
+static BOOL activeGestureDidDrag = NO;
+static double activeGestureMaxDragDistance = 0.0;
+static int64_t activeGestureClickCount = 0;
+static int64_t activeGestureButtonNumber = -1;
+static CGPoint activeGestureMouseDown = {0, 0};
+static BOOL activeGestureMouseDownAvailable = NO;
+
+static double UpdatedMaxDragDistance(double currentMaximum, CGPoint mouseDown,
+    CGPoint draggedPosition) {
+  if (!isfinite(currentMaximum) || currentMaximum < 0) return 0.0;
+  if (!isfinite(mouseDown.x) || !isfinite(mouseDown.y) ||
+      !isfinite(draggedPosition.x) || !isfinite(draggedPosition.y)) {
+    return currentMaximum;
+  }
+  double distance = hypot(draggedPosition.x - mouseDown.x,
+      draggedPosition.y - mouseDown.y);
+  return isfinite(distance) ? MAX(currentMaximum, distance) : currentMaximum;
+}
+
+static int RunGestureDistanceSelfTest(void) {
+  CGPoint mouseDown = CGPointMake(10.0, 10.0);
+  double maximum = 0.0;
+  maximum = UpdatedMaxDragDistance(maximum, mouseDown, CGPointMake(13.0, 14.0));
+  maximum = UpdatedMaxDragDistance(maximum, mouseDown, CGPointMake(16.0, 18.0));
+  // A later dragged event returning close to mouse-down must not erase the excursion.
+  maximum = UpdatedMaxDragDistance(maximum, mouseDown, CGPointMake(10.5, 10.0));
+  if (fabs(maximum - 10.0) > 0.0001) {
+    fprintf(stderr,
+        "[selection-probe] gesture_distance_self_test=failed max=%.3f expected=10.000\n",
+        maximum);
+    return 1;
+  }
+  printf("[selection-probe] gesture_distance_self_test=passed max=%.3f\n", maximum);
+  return 0;
+}
 
 static uint32_t MouseUpCount(void) {
   return CGEventSourceCounterForEventType(
@@ -870,13 +912,10 @@ static void StartPendingQuery(void) {
   });
 }
 
-static void CaptureMouseUp(uint32_t counter, uint32_t observedCount, int settleDelayMs) {
+static void CaptureMouseUp(uint32_t counter, uint32_t observedCount, int settleDelayMs,
+    CGPoint mouse, BOOL mouseAvailable, BOOL mouseApproximate, NSDictionary *gesture) {
   uint64_t sampleId = ++latestSampleId;
   NSRunningApplication *application = NSWorkspace.sharedWorkspace.frontmostApplication;
-  CGEventRef cursorEvent = CGEventCreate(NULL); // Snapshot only; never posted.
-  CGPoint mouse = cursorEvent ? CGEventGetLocation(cursorEvent) : CGPointZero;
-  BOOL mouseAvailable = cursorEvent != NULL && isfinite(mouse.x) && isfinite(mouse.y);
-  if (cursorEvent != NULL) CFRelease(cursorEvent);
   NSDictionary *sample = @{
     @"sampleId": @(sampleId),
     @"captured_at_uptime_seconds": @(NSProcessInfo.processInfo.systemUptime),
@@ -889,10 +928,11 @@ static void CaptureMouseUp(uint32_t counter, uint32_t observedCount, int settleD
     },
     @"mouse": @{
       @"available": @(mouseAvailable),
-      @"approximate": @YES,
+      @"approximate": @(mouseApproximate),
       @"coordinate_space": @"global_display_top_left",
       @"position": mouseAvailable ? @{@"x": @(mouse.x), @"y": @(mouse.y)} : (id)NSNull.null,
     },
+    @"gesture": gesture,
     @"bounds_coordinate_space": @"ax_global_screen_top_left_points",
   };
   if (pendingSample != nil) {
@@ -909,15 +949,103 @@ static void CaptureMouseUp(uint32_t counter, uint32_t observedCount, int settleD
   });
 }
 
+static NSDictionary *GestureReport(uint64_t generation, int64_t clickCount, BOOL didDrag,
+    double maxDragDistance, BOOL complete, CGPoint mouseDown, BOOL mouseDownAvailable) {
+  return @{
+    @"button": @"left",
+    @"generation": @(generation),
+    @"clickCount": @(MAX((int64_t)0, clickCount)),
+    @"didDrag": @(didDrag),
+    @"maxDragDistance": @(MAX(0.0, maxDragDistance)),
+    @"complete": @(complete),
+    @"mouseDownPosition": mouseDownAvailable
+        ? @{@"x": @(mouseDown.x), @"y": @(mouseDown.y)}
+        : (id)NSNull.null,
+  };
+}
+
+static CGEventRef ObserveMouseGesture(CGEventTapProxy proxy, CGEventType type,
+    CGEventRef event, void *userInfo) {
+  (void)proxy;
+  int settleDelayMs = *(int *)userInfo;
+  @autoreleasepool {
+    if (type == kCGEventTapDisabledByTimeout ||
+        type == kCGEventTapDisabledByUserInput) {
+      if (mouseEventTap != NULL) CGEventTapEnable(mouseEventTap, true);
+      return event;
+    }
+    if (type == kCGEventLeftMouseDown) {
+      trackingLeftGesture = YES;
+      activeGestureDidDrag = NO;
+      activeGestureMaxDragDistance = 0.0;
+      activeGestureGeneration = ++gestureGenerationCounter;
+      activeGestureClickCount = CGEventGetIntegerValueField(event, kCGMouseEventClickState);
+      activeGestureButtonNumber = CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
+      activeGestureMouseDown = CGEventGetLocation(event);
+      activeGestureMouseDownAvailable = isfinite(activeGestureMouseDown.x) &&
+          isfinite(activeGestureMouseDown.y);
+      return event;
+    }
+    if (type == kCGEventLeftMouseDragged) {
+      if (trackingLeftGesture) {
+        activeGestureDidDrag = YES;
+        if (activeGestureMouseDownAvailable) {
+          activeGestureMaxDragDistance = UpdatedMaxDragDistance(
+              activeGestureMaxDragDistance, activeGestureMouseDown,
+              CGEventGetLocation(event));
+        }
+      }
+      return event;
+    }
+    if (type != kCGEventLeftMouseUp) return event;
+
+    CGPoint mouseUp = CGEventGetLocation(event);
+    BOOL mouseUpAvailable = isfinite(mouseUp.x) && isfinite(mouseUp.y);
+    int64_t upClickCount = CGEventGetIntegerValueField(event, kCGMouseEventClickState);
+    int64_t upButtonNumber = CGEventGetIntegerValueField(event, kCGMouseEventButtonNumber);
+    int64_t clickCount = MAX(activeGestureClickCount, upClickCount);
+    BOOL complete = trackingLeftGesture && activeGestureGeneration > 0 &&
+        activeGestureButtonNumber == kCGMouseButtonLeft &&
+        upButtonNumber == kCGMouseButtonLeft;
+    uint64_t generation = complete ? activeGestureGeneration : ++gestureGenerationCounter;
+    NSDictionary *gesture = GestureReport(generation, clickCount,
+        complete && activeGestureDidDrag,
+        complete ? activeGestureMaxDragDistance : 0.0, complete, activeGestureMouseDown,
+        complete && activeGestureMouseDownAvailable);
+
+    trackingLeftGesture = NO;
+    activeGestureDidDrag = NO;
+    activeGestureMaxDragDistance = 0.0;
+    activeGestureGeneration = 0;
+    activeGestureClickCount = 0;
+    activeGestureButtonNumber = -1;
+    activeGestureMouseDownAvailable = NO;
+
+    // Keep the event-tap callback nonblocking. Capturing on the main queue also
+    // lets the public event counter settle after this callback returns, so the
+    // existing stale-query guard records the same completed mouse-up.
+    dispatch_async(dispatch_get_main_queue(), ^{
+      CaptureMouseUp(MouseUpCount(), 1, settleDelayMs, mouseUp,
+          mouseUpAvailable, NO, gesture);
+    });
+  }
+  return event;
+}
+
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
     int settleDelayMs = kDefaultSettleDelayMs;
-    BOOL delayProvided = NO, showHelp = NO;
+    BOOL delayProvided = NO, showHelp = NO, runGestureDistanceSelfTest = NO;
     // Parse all options before reading trust/counters. The default mode is unchanged.
     for (int index = 1; index < argc; index++) {
       if (strcmp(argv[index], "--help") == 0 && !showHelp) { showHelp = YES; continue; }
       if (strcmp(argv[index], "--target-container") == 0 && !targetContainerMode) {
         targetContainerMode = YES;
+        continue;
+      }
+      if (strcmp(argv[index], "--self-test-gesture-distance") == 0 &&
+          !runGestureDistanceSelfTest) {
+        runGestureDistanceSelfTest = YES;
         continue;
       }
       if (strcmp(argv[index], "--delay-ms") == 0 && !delayProvided && index + 1 < argc) {
@@ -930,27 +1058,49 @@ int main(int argc, const char *argv[]) {
           continue;
         }
       }
-      fputs("Usage: selection-probe [--target-container] [--delay-ms 10..1000] [--help]\n", stderr);
+      fputs("Usage: selection-probe [--target-container] [--delay-ms 10..1000] [--self-test-gesture-distance] [--help]\n", stderr);
       return 2;
     }
     if (showHelp) {
-      puts("Usage: selection-probe [--target-container] [--delay-ms 10..1000] [--help]\n"
-           "Default delay: 75ms; poll: 10ms; AX message timeout: 200ms; query budget: 800ms.\n"
+      puts("Usage: selection-probe [--target-container] [--delay-ms 10..1000] [--self-test-gesture-distance] [--help]\n"
+           "Default delay: 75ms; listen-only mouse gesture tap; fallback poll: 10ms.\n"
+           "Drag intent threshold: 4 global macOS points; no Retina scaling.\n"
+           "AX message timeout: 200ms; query budget: 800ms.\n"
            "Public AX fallback: hit-test, 8 parents, current window (depth 7, nodes 64, batches 8).\n"
            "--target-container: replace window scan with one verified hit-ancestry container;\n"
            "  extra depth 3, new nodes 32 (global cap 64), attribute-name checks 6, same time budget.\n"
            "Read-only selection diagnostics on stdout; no automatic permission prompt.\n"
            "Use non-sensitive test text only. Stop with Ctrl+C.\n"
+           "--self-test-gesture-distance validates maximum excursion and exits.\n"
            "--help does not start observation or query Accessibility.");
       return 0;
     }
+    if (runGestureDistanceSelfTest) return RunGestureDistanceSelfTest();
     setvbuf(stdout, NULL, _IONBF, 0);
     signal(SIGINT, HandleSignal);
     signal(SIGTERM, HandleSignal);
     queryQueue = dispatch_queue_create("selection-probe.ax-query", DISPATCH_QUEUE_SERIAL);
+    BOOL listenAccess = CGPreflightListenEventAccess();
+    CGEventMask mouseMask = CGEventMaskBit(kCGEventLeftMouseDown) |
+        CGEventMaskBit(kCGEventLeftMouseDragged) | CGEventMaskBit(kCGEventLeftMouseUp);
+    mouseEventTap = CGEventTapCreate(kCGSessionEventTap, kCGTailAppendEventTap,
+        kCGEventTapOptionListenOnly, mouseMask, ObserveMouseGesture, &settleDelayMs);
+    if (mouseEventTap != NULL) {
+      mouseEventTapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, mouseEventTap, 0);
+      if (mouseEventTapSource != NULL) {
+        CFRunLoopAddSource(CFRunLoopGetMain(), mouseEventTapSource, kCFRunLoopCommonModes);
+        CGEventTapEnable(mouseEventTap, true);
+      } else {
+        CFRelease(mouseEventTap);
+        mouseEventTap = NULL;
+      }
+    }
     __block uint32_t lastCount = MouseUpCount();
-    printf("[selection-probe] started pid=%d poll_ms=%d settle_ms=%d ax_timeout_ms=200 query_budget_ms=800 max_nodes=64\n",
-        getpid(), kPollIntervalMs, settleDelayMs);
+    printf("[selection-probe] started pid=%d poll_ms=%d settle_ms=%d ax_timeout_ms=200 query_budget_ms=800 max_nodes=64 drag_threshold_points=%.1f\n",
+        getpid(), kPollIntervalMs, settleDelayMs, kDragSelectionThresholdPoints);
+    printf("[selection-probe] mouse_gesture_event_tap=%s listen_access_preflight=%s automatic_prompt=false\n",
+        mouseEventTap != NULL ? "available" : "unavailable",
+        listenAccess ? "granted" : "not_granted");
     if (targetContainerMode)
       puts("[selection-probe] mode=target_container max_extra_depth=3 max_new_nodes=32; no broad window scan");
     printf("[selection-probe] accessibility=%s; automatic_prompt=false\n",
@@ -967,17 +1117,35 @@ int main(int argc, const char *argv[]) {
           CFRunLoopStop(CFRunLoopGetMain());
           return;
         }
+        if (mouseEventTap != NULL) return;
         uint32_t count = MouseUpCount();
         if (count != lastCount) {
           uint32_t delta = count - lastCount;
           lastCount = count;
-          CaptureMouseUp(count, delta, settleDelayMs);
+          CGEventRef cursorEvent = CGEventCreate(NULL); // Snapshot only; never posted.
+          CGPoint mouse = cursorEvent ? CGEventGetLocation(cursorEvent) : CGPointZero;
+          BOOL mouseAvailable = cursorEvent != NULL && isfinite(mouse.x) && isfinite(mouse.y);
+          if (cursorEvent != NULL) CFRelease(cursorEvent);
+          uint64_t generation = ++gestureGenerationCounter;
+          NSDictionary *gesture = GestureReport(generation, 0, NO, 0.0, NO,
+              CGPointZero, NO);
+          CaptureMouseUp(count, delta, settleDelayMs, mouse, mouseAvailable, YES, gesture);
         }
       }
     });
     dispatch_resume(timer);
     CFRunLoopRun();
     dispatch_source_cancel(timer);
+    if (mouseEventTapSource != NULL) {
+      CFRunLoopRemoveSource(CFRunLoopGetMain(), mouseEventTapSource, kCFRunLoopCommonModes);
+      CFRelease(mouseEventTapSource);
+      mouseEventTapSource = NULL;
+    }
+    if (mouseEventTap != NULL) {
+      CFMachPortInvalidate(mouseEventTap);
+      CFRelease(mouseEventTap);
+      mouseEventTap = NULL;
+    }
     puts("[selection-probe] stopped; no helper processes were launched.");
   }
   return 0;

@@ -8,7 +8,7 @@
 
 ## Solution
 
-用户复制英文内容后，AI English Companion 会结合当前应用场景提供：
+用户可以复制英文单词，或双击单个英文单词后点击轻量 ✦ 按钮。AI English Companion 会在同一个翻译悬浮窗中结合当前应用场景提供：
 
 - 中文释义
 - 音标
@@ -18,6 +18,7 @@
 ## Key Features
 
 - Clipboard-triggered assistant
+- Double-click Selection Trigger and Selection Action Button
 - Floating window
 - Current application detection
 - Backend API
@@ -50,3 +51,4 @@ LLM
 - Checkpoint 02：当前前台应用识别
 - Checkpoint 03：Backend API 基础架构
 - Checkpoint 04：LLM Provider 抽象与 Mock AI explanation API
+- PASS 3：Selection Trigger 接入生产 Translator Popover（TextEdit、Chrome、Cursor、Notion 已通过 macOS 手动验收）

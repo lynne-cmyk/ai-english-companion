@@ -20,8 +20,8 @@ These earlier observations explain why the default public fallback was added; th
 
 ## Architecture
 
-1. A main-queue timer samples `CGEventSourceCounterForEventType(kCGEventSourceStateCombinedSessionState, kCGEventLeftMouseUp)` every 10ms. It does not intercept, post, or modify events. The initial counter becomes the baseline, so historical clicks do not generate samples.
-2. Each observed counter change gets a monotonically increasing `sampleId`, app name/PID/bundle identifier, uptime timestamp, and approximate mouse position from `CGEventCreate(NULL)` + `CGEventGetLocation()`. The snapshot event is never posted. `observed_mouse_ups` greater than 1 means several events were coalesced; exact individual event coordinates are unavailable.
+1. A public Core Graphics event tap uses `kCGEventTapOptionListenOnly` to observe left mouse-down, left-mouse-dragged, and left mouse-up. It never intercepts, posts, changes, or suppresses an event. Public event fields provide the exact event point, mouse button number, `kCGMouseEventClickState`, direct evidence that a dragged event occurred between down and up, and the maximum Euclidean distance from mouse-down to every observed dragged position.
+2. Each completed down/up gesture gets a monotonically increasing gesture generation and sample ID, app name/PID/bundle identifier, uptime timestamp, captured mouse-up position, click count, `didDrag`, and `maxDragDistance`. `didDrag` remains true whenever any dragged event occurred, and the maximum excursion remains measured in unscaled macOS global points. PASS 3 production eligibility now requires click count 2+; drag measurements—including the earlier four-point experimental threshold—remain diagnostic-only for future phrase/arbitrary-span work. Counter polling remains only as a fail-closed diagnostic fallback if the listen-only event tap cannot be created; those fallback samples have `gesture.complete=false` and cannot qualify a Selection Action.
 3. Wait 75ms by default for the target app to update its selection. A newer sample replaces a pending older one. The delay is adjustable with `--delay-ms` (10–1000ms); 50–100ms is the initial experimental range.
 4. Check that the captured app is still frontmost, then run AX calls on a separate serial queue. Only one query and one latest pending sample are retained. Slow AX calls cannot block mouse sampling or Ctrl+C processing.
 5. Silently check `AXIsProcessTrusted()`. If false, print `permission_required`, leave text/range/bounds as `not_queried`, and continue observing safely.
@@ -40,7 +40,7 @@ The probe does not guarantee an atomic selection snapshot: a target can change i
 
 | Limit | Value / behavior |
 | --- | --- |
-| Settling delay / event poll | 75ms / 10ms, unchanged |
+| Settling delay / fallback counter poll | 75ms / 10ms; the event tap is primary |
 | Per-AX message timeout | 200ms, unchanged |
 | Total AX query budget | 800ms; does not include settling or queue wait |
 | Parent walk | Hit element at depth 0, at most 8 parent edges |
@@ -49,16 +49,18 @@ The probe does not guarantee an atomic selection snapshot: a target can change i
 | Window queue | Maximum 64 distinct scheduled nodes, duplicates/cycles skipped |
 | Child reads | At most 8 per call; first 64 entries per relationship at most |
 | Selected-text console preview | Approximately 512 UTF-16 units, unchanged |
+| Drag diagnostics | Maximum excursion from mouse-down in macOS global points, no Retina scaling; the retained 4-point experiment does not grant PASS 3 eligibility |
 
 Limits deliberately favor safe failure over exhaustive compatibility. `query_budget_exceeded`, `node_limit_reached`, or truncation means **inconclusive within this budget**, not that Chrome cannot expose selection. If text was read before optional geometry exhausted the budget, retain that text result and mark unattempted geometry separately.
 
 ## Privacy and Accessibility permission
 
-- No automatic Accessibility permission prompt: only `AXIsProcessTrusted()` is used.
+- No automatic Accessibility or Input Monitoring permission prompt: only `AXIsProcessTrusted()` and `CGPreflightListenEventAccess()` are used for permission state.
 - The probe requires Accessibility trust to read other apps. Missing trust is not an app-compatibility failure.
+- The public listen-only event tap may require Input Monitoring approval for the responsible executable. If it cannot be created, startup reports `mouse_gesture_event_tap=unavailable`; fallback counter samples remain diagnostic-only because they cannot prove click count or drag provenance.
 - To test with permission, manually open **System Settings → Privacy & Security → Accessibility** and verify the identity macOS associates with the running executable. Development launches may be associated with the helper or its responsible launcher. Do not assume authorizing Electron automatically authorizes this standalone probe; do not grant unrelated/broad permissions merely to silence a failure. If the correct identity is unclear, stop and investigate.
 - After granting permission, try another selection. If the trust state remains false, stop and restart the probe. Development rebuilds may also require rechecking authorization.
-- No Screen Recording, Full Disk Access, Automation, or Input Monitoring request is made.
+- No Screen Recording, Full Disk Access, Automation, or automatic Input Monitoring request is made.
 - Secure fields are skipped based on the app's AX role/subrole. This cannot protect against an application that misrepresents a custom password control. **Do not test with passwords, tokens, private messages, or confidential documents.**
 - Only selected text is read. The console preview is capped at roughly 512 UTF-16 units, extending to the end of a composed character if necessary. `length_utf16` and `truncated` describe the original selection. Nonempty whitespace is not English-word validation; the probe intentionally tests multiword/multiline text too.
 - JSON escapes selected text, including newlines and control characters. The probe writes no data files. The terminal may retain scrollback or session logs: do not use output redirection/`tee`, and share only sanitized diagnostics. Use a public, synthetic fixture.
@@ -85,6 +87,12 @@ Compile and show help without starting observation or checking permission:
 npm run spike:selection -- --help
 ```
 
+After compilation, validate maximum-excursion tracking without starting observation:
+
+```bash
+dist-native/selection-probe --self-test-gesture-distance
+```
+
 The optional mode also has a safe help invocation: `npm run spike:selection -- --target-container --help`. The existing npm script passes arguments through; `package.json` does not need changes for this experiment.
 
 Exact compile command used by the package script:
@@ -98,13 +106,16 @@ The script then runs `dist-native/selection-probe`. `dist-native/` is already ig
 
 ## Expected diagnostics
 
-Startup reports the probe PID, poll interval, settling delay, AX timeout, and `trusted` or `permission_required`. Each sample is a readable JSON record prefixed with `[selection-probe] sample`.
+Startup reports the probe PID, event-tap availability, listen-access preflight, fallback poll interval, settling delay, AX timeout, and `trusted` or `permission_required`. Each sample is a readable JSON record prefixed with `[selection-probe] sample`.
 
 | Field | Interpretation |
 | --- | --- |
 | `sampleId` | Increasing ID for each observed counter change; results may finish out of order. |
 | `app.name`, `app.pid`, `app.bundle_id` | App metadata captured at the approximate mouse-up time. Missing bundle ID is `null`. |
 | `mouse.available`, `mouse.position`, `mouse.approximate` | Fallback position captured before the settling delay, not the mouse position at query completion. |
+| `gesture.button`, `gesture.generation` | Left-button provenance and a monotonically increasing one-shot gesture identity. |
+| `gesture.clickCount`, `gesture.didDrag`, `gesture.maxDragDistance`, `gesture.complete` | Public CGEvent diagnostics. `didDrag` records any dragged event and distance records maximum excursion; PASS 3 production qualifies only a fresh completed left-button gesture with click count 2+. |
+| `gesture.mouseDownPosition` | Captured down point for diagnostics only; it is not selection identity or positioning input. |
 | `accessibility` | `trusted` or `permission_required`; no prompt is triggered. |
 | `selected_text` | Independent `status`, `value`, AX error, and on success length/truncation/nonempty metadata. An empty string can be a successful API read with no selection. |
 | `range` | Independent status and `{location, length}` relative to the chosen candidate's text. Not a byte offset or screen coordinate. |
@@ -307,7 +318,7 @@ Stop with Ctrl+C. To return to the existing default probe, run `npm run spike:se
 
 ## Known limitations / decision gate
 
-- Counter sampling approximates mouse-up; it is not a native event stream. Multiple releases between ticks are coalesced and accurately reported as such.
+- The listen-only event tap is the authoritative mouse-gesture stream. Counter sampling is retained only as a diagnostic fallback and cannot enable the Selection Action because click/drag provenance is unavailable.
 - No keyboard-only selection trigger, unrestricted tree traversal, text-marker extension APIs, automatic recovery, clipboard fallback reads, or OCR fallback.
 - WebArea/canvas/custom editors may not expose standard selection attributes, even after bounded discovery. An owning-PID mismatch is rejected rather than guessed.
 - The first reasonable candidate with nonempty text wins. Optional missing range/bounds does not cause a second search or borrowing geometry from another element. Partial/retained selections require manual verification, not frontend guesses.

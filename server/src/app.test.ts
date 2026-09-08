@@ -36,22 +36,22 @@ test("POST /ai/explain returns the Mock Provider result", async (t) => {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      word: "component",
-      source_app: "Cursor",
+      word: "Markdown",
+      source_app: "Google Chrome",
       user_goal: "learn English while working",
     }),
   });
 
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
-    word: "component",
-    phonetic: "/kəmˈpoʊ.nənt/",
-    part_of_speech: "NOUN",
-    translation: "组件",
-    general_meaning: "构成较大整体的一部分，或系统中的组成元素。",
+    word: "Markdown",
+    phonetic: "/mock/",
+    translation: "测试释义",
+    general_meaning:
+      "这是 Mock Provider 返回的测试含义，不代表真实词典解释。",
     context_explanation:
-      "你现在在 Cursor 中看到 component，它通常指 React 中可复用的一段 UI 代码。",
-    example: "This button is a reusable component.",
+      "你现在在 Google Chrome 中看到 Markdown。这是 Mock Provider 返回的测试解释，用于验证跨 App 翻译流程。",
+    example: 'Mock response for "Markdown".',
   });
 });
 

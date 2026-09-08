@@ -1,8 +1,8 @@
-# Selection Action Button v1.1 — Isolated Electron Spike
+# Selection Action Button v1.1 — Selection Trigger Integration Spike
 
 ## Purpose and experiment boundary
 
-This spike connects the existing standalone macOS `SelectionProbe` output to the approved React Selection Action Button. It proves only:
+PASS 2 connects the standalone macOS `SelectionProbe` output to the approved React Selection Action Button. The isolated command proves:
 
 ```text
 real text selection
@@ -13,15 +13,46 @@ real text selection
 → button hides
 ```
 
-It does **not** call the Backend or AI, open the translator popover, use production Electron IPC, read or modify the clipboard, or change the production `npm start` flow. Selected text is retained only in process memory and is never persisted or sent over the network.
+The isolated `spike:selection-action` command does **not** call the Backend or AI, open the translator popover, read or modify the clipboard, or start the production app. Selected text is retained only in process memory and is never persisted by the Selection Action layer.
+
+PASS 3 reuses that proven controller in production. A valid, consumed single-word selection is converted to the existing in-memory AI request snapshot and sent through the same Backend request lifecycle as a clipboard-triggered word. Clipboard triggering remains enabled and unchanged.
+
+PASS 3 production mouse eligibility is deliberately limited to a fresh completed double-click (`clickCount >= 2`) that yields one usable ASCII English word. Drag selection, keyboard selection, phrases, and multi-word selections are deferred. The native probe continues collecting drag diagnostics for later investigation, but drag data does not make a PASS 3 selection actionable.
 
 ## Architecture
 
-- `native/SelectionProbe.m` remains the selection source. The experiment launches its compiled binary in default mode and consumes stdout without changing native selection-reading logic.
+- `native/SelectionProbe.m` remains the selection source. A public, listen-only Core Graphics event tap observes left mouse-down, left-mouse-dragged, and left mouse-up without intercepting or modifying them. Each AX query sample carries one gesture generation, click count, honest `didDrag` evidence, the maximum Euclidean excursion from mouse-down across every dragged event, and the captured mouse-up position.
 - `ProbeSampleParser` reconstructs pretty-printed JSON after the `[selection-probe] sample` marker. It supports split chunks, strings containing braces, malformed records, and a 256KB maximum record buffer. The probe can emit more than 64KB of bounded traversal metadata for its maximum 64 AX nodes; unrelated stdout before the exact sample marker is still discarded.
-- `SelectionSession` accepts only non-stale, non-discarded, exact, non-empty usable selections. It retains an independent monotonically increasing sample high-water mark so an older record cannot reappear after invalidation. It creates an opaque UUID and keeps the selected text, source app, PID, bundle ID, bounds, captured mouse-up position, and capture time only in the main process.
+- `electron/selection/SelectionActionController.ts` owns the probe process, parser, selection session, action BrowserWindow, positioning, narrow IPC validation, one-shot click consumption, and shutdown cleanup. Both the isolated PASS 2 app and production use this controller; they never run together in one Electron process.
+- `SelectionSession` accepts only non-stale, non-discarded, exact, non-empty usable selections that belong to a new completed left-button gesture generation with click count 2 or greater. `didDrag` and `maxDragDistance` remain honest native diagnostics, including the earlier four-point experimental threshold, but no `clickCount=1` drag is production-actionable in PASS 3. It retains independent sample and gesture-generation high-water marks so neither an older AX result nor a reused gesture token can become actionable. It creates an opaque UUID and keeps the selected text, source app, PID, bundle ID, range, bounds, captured mouse-up position, and capture time only in the main process.
 - The renderer receives only `{ visible, selectionId }`. Its preload exposes only `ready()`, `onState()`, `pointerDown(selectionId)`, and `click(selectionId)` on experiment-specific IPC channels.
 - One reusable 36×36 transparent BrowserWindow contains the 32×32 hit region plus 2px rendering allowance on each side. The visible surface remains 28×28. Native shadow is disabled so only the approved CSS shadow renders.
+
+## PASS 3 production request boundary
+
+Production now has two input paths that converge on one request lifecycle:
+
+```text
+Clipboard Trigger
+clipboard word → shared production translation request lifecycle → Translator Popover
+
+Selection Trigger
+double-click one English word → Selection Action Button ✦ → click
+→ trusted SelectionSnapshot → shared production translation request lifecycle
+→ Translator Popover
+```
+
+The renderer continues to send only an opaque `selectionId`. After main-process sender and live-session validation, the controller consumes and hides the button, then delivers its authoritative snapshot to production. Production:
+
+1. trims only leading and trailing whitespace;
+2. accepts only `/^[A-Za-z]+$/`, preserving the selected word's original case;
+3. uses the captured source application without re-detecting the foreground app;
+4. derives the translator anchor from valid selection bounds, otherwise from the captured mouse-up point;
+5. allocates a new AI `requestId` and runs the existing Loading → Result/Error/Offline path.
+
+The selection UUID/sample ID and AI request ID remain separate. Clipboard and selection triggers share `RequestSnapshot`, `latestAIRequestId`, one `AbortController`, stale-response protection, the Backend request path, Loading/Result/Error/Offline states, Retry, request-specific dismissal protection, and the same Translator Popover. Whichever trigger starts later supersedes the older request. A valid clipboard request also invalidates and hides an unconsumed Selection Action Button. Retry preserves the exact failed request snapshot, including a selection-derived source app and anchor.
+
+Selections containing spaces, punctuation, digits, line breaks after trimming, or no remaining characters are rejected before any Backend request. No preview, probe, or renderer payload can supply the Backend URL, user goal, selected text, or application context.
 
 ## Frozen visual design
 
@@ -37,7 +68,9 @@ It does **not** call the Backend or AI, open the translator popover, use product
 
 Startup and other log lines are ignored. A sample record is accepted only after a balanced JSON object has been reconstructed and parsed. Malformed and oversized records fail closed: they produce local diagnostics, invalidate the live snapshot, send `visible:false`, and hide the BrowserWindow.
 
-A new usable sample replaces the previous snapshot and repositions the same window. An unusable current sample, a newer stale/discarded sample, missing Accessibility permission, or a changed source context reported through a new mouse-up hides the window. An older stale result cannot clear a newer snapshot or be replayed after invalidation. Renderer load/readiness without a live snapshot always replays `visible:false`, never a cached visible state. A click consumes the current ID once; duplicate and replaced-ID clicks are rejected.
+A new usable sample replaces the previous snapshot and repositions the same window only when its one-shot gesture generation proves a fresh completed double/triple click. An ordinary single click and every `clickCount=1` drag—including tiny jitter, a substantial incidental drag, or an actual text drag—remain non-actionable and hide the Selection Action Button with `drag_not_supported_in_pass3` where applicable. `didDrag` continues to mean that at least one dragged event occurred, and `maxDragDistance` remains available for diagnostics and future work. An unusable current sample, a newer stale/discarded sample, missing Accessibility permission, or a nonqualifying gesture clears only the live actionable selection and hides the window.
+
+A click consumes the current ID once, clears the live selection immediately, and retains a separate replay-suppression fingerprint made from selected text, source app, PID, bundle ID, and the public AX selected-text range when available. Empty, unusable, stale, bounds-less, mouse-only, ordinary single-click, and drag samples do not clear that fingerprint. A fresh double-click may intentionally re-arm an identical fingerprint. Drag-trigger qualification was deferred because current public AX evidence was insufficiently reliable to distinguish fresh drag-text selection from stale selection exposure across tested surfaces. This is a PASS 3 product-scope decision, not a claim that public AX can never support drag selection. An older AX result, reused gesture generation, duplicate click, or replaced ID cannot become actionable. Renderer load/readiness without a live snapshot always replays `visible:false`, never a cached visible state.
 
 Selected text is capped by the probe and rejected when the logged value is truncated, because a partial selection is not an exact snapshot. Renderer input can never supply selected text, source app, executable paths, or URLs.
 
@@ -59,13 +92,13 @@ For each accepted selection the terminal records the renderer URL, loaded/ready 
 
 ## Self-mouse-up protection
 
-The floating button's `pointerdown` sends only the current opaque ID. Main validates the sender, ID, current snapshot, and window association, then arms a one-second protection limited to the button window's 36×36 bounds. The next probe sample is ignored only when its captured mouse-up point falls inside those bounds. A genuine selection outside the button is not suppressed and replaces or clears the prior snapshot.
+The floating button's `pointerdown` sends only the current opaque ID. Main validates the sender, ID, current snapshot, and window association, then arms a one-second protection limited to the button window's 36×36 bounds. The next probe sample is ignored only when its captured mouse-up point falls inside those bounds. Its gesture generation is still consumed and cannot qualify a later sample. A genuine double-click outside the button may reselect the same fingerprint. An ordinary click or drag outside clears live state without reviving stale AX text and cannot create a new PASS 3 action.
 
-The subsequent click is independently validated and consumed once. It prints a local diagnostic with an 80-character, single-line representation of the selected test text and app, then hides the window. It never starts translation.
+The subsequent click is independently validated and consumed once, then hides the button window. In the isolated PASS 2 command, the callback prints only a bounded local diagnostic and never starts translation. In production PASS 3, the callback passes the authoritative snapshot into the shared translation request lifecycle; the renderer cannot supply the word, source app, user goal, or Backend URL.
 
 ## Permission behavior
 
-The experiment does not request Accessibility permission and never opens System Settings. If the probe reports `permission_required`, no button is shown, a clear terminal diagnostic is printed, and observation continues safely. Permission must be granted manually to the Electron experiment if macOS requires a separate trusted executable entry.
+Neither mode requests Accessibility or Input Monitoring permission and neither opens System Settings. The AX path still requires Accessibility trust. The listen-only Core Graphics event tap may additionally require macOS Input Monitoring approval for the responsible development executable. Startup reports both the listen-access preflight and whether the event tap was created. If the event tap is unavailable, counter polling continues for diagnostics but emits `complete:false` gestures, so no Selection Action Button is shown without proven intent. The production clipboard trigger remains available.
 
 ## Commands
 
@@ -73,6 +106,12 @@ Run isolated tests:
 
 ```bash
 npm run test:selection-action
+```
+
+The native maximum-excursion regression check can be run after compiling the probe:
+
+```bash
+dist-native/selection-probe --self-test-gesture-distance
 ```
 
 Build and launch only the experiment:
@@ -83,21 +122,34 @@ npm run spike:selection-action
 
 Stop it with `Ctrl+C`. This command builds the Vite entries, experiment TypeScript, and SelectionProbe binary, then launches `dist-electron/selection-spike/main.js`; it does not run the package's production main entry.
 
+For PASS 3 production QA, start the Backend in one Terminal and Electron in another:
+
+```bash
+cd server
+AI_PROVIDER=mock npm start
+```
+
+```bash
+npm start
+```
+
+The regular production build now compiles `SelectionProbe` alongside the existing native helpers. Production starts exactly one controller after Electron is ready and stops its probe during `will-quit`.
+
 ## Manual QA matrix
 
 Use non-sensitive English fixture text and test only applications already reported compatible with the probe:
 
-| App / surface | Probe status | PASS 2 action-button status |
-| --- | --- | --- |
-| TextEdit plain text | Pass | PASS |
-| Chrome ordinary webpage body | Pass | PASS |
-| Cursor editor | Pass | PASS |
-| Notion text block | Pass | PASS |
-| Figma text-editing mode | Inconclusive | Experimental / pending; not part of PASS 2 acceptance |
+| App / surface | Probe status | PASS 2 action button | PASS 3 production E2E |
+| --- | --- | --- | --- |
+| TextEdit plain text | Pass | PASS | PASS |
+| Chrome ordinary webpage body | Pass | PASS | PASS |
+| Cursor editor | Pass | PASS | PASS |
+| Notion text block | Pass | PASS | PASS |
+| Figma text-editing mode | Inconclusive | Experimental / pending | Experimental / pending; not part of PASS 3 acceptance |
 
 For each supported surface:
 
-1. Select one English word and verify exactly one approved v1.1 button appears without covering the highlight.
+1. Double-click one ASCII English word and verify exactly one approved v1.1 button appears without covering the highlight.
 2. Verify placement, hover, pressed feedback, and that the source app remains effectively active.
 3. Click once and confirm the terminal reports the correct sample, word, and app; the button must hide.
 4. Make a new selection and confirm the old window is replaced, not duplicated.
@@ -109,7 +161,9 @@ For each supported surface:
 ## Known limitations
 
 - Figma remains experimental; targeted-container probe mode is not launched by this command.
-- The probe is mouse-up driven. Keyboard-only selection changes, application switches without a subsequent observed mouse-up, and scroll-driven geometry changes are not continuously monitored.
+- PASS 3 production gesture qualification intentionally supports only completed mouse-driven double/triple-click for a single ASCII English word. Drag selection, keyboard-only selection, Shift+click, phrases, multi-word selections, and arbitrary text spans are deferred.
 - Multiline AX bounds can describe an enclosing rectangle rather than the final visual line; this pass does not infer line fragments.
 - Electron transparency, first-click behavior, permission identity, focus preservation, and multi-monitor coordinate accuracy require real macOS manual QA.
-- There is no AI, Backend, Retry, Offline, clipboard, production popover, or automatic recovery integration in this spike.
+- The isolated PASS 2 command intentionally has no AI/Backend integration. PASS 3 production integration completed manual E2E acceptance in TextEdit, Chrome, Cursor, and Notion.
+- Selection remains limited to one ASCII English word. Phrases, hyphenated words, apostrophes, digits, and multiline selections are intentionally rejected in this pass.
+- A fresh double-click may immediately reselect the same consumed word and AX range. Every drag-only gesture remains unsupported in PASS 3, even when it crosses a different word or range; users can trigger supported single-word translation by double-clicking. No timer, mouse-position identity, threshold increase, or pointer heuristic is used to weaken this rule.

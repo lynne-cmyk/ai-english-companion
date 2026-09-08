@@ -9,6 +9,10 @@ const SAMPLE_MARKER = "[selection-probe] sample";
 export const DEFAULT_MAX_PROBE_RECORD_SIZE = 256 * 1024;
 const MAX_SELECTION_LENGTH = 512;
 const SELF_MOUSE_UP_PROTECTION_MS = 1_000;
+// Retained diagnostic threshold from the drag experiment. Native CGEvent
+// coordinates are macOS global points and are not Retina-scaled. PASS 3
+// production eligibility is double-click-only.
+export const DRAG_SELECTION_THRESHOLD_POINTS = 4;
 
 export type ProbeParserEvent =
   | { type: "sample"; value: unknown }
@@ -112,7 +116,9 @@ export class ProbeSampleParser {
 
   private findJsonStart() {
     let index = SAMPLE_MARKER.length;
-    while (index < this.buffer.length && /\s/.test(this.buffer[index])) index += 1;
+    while (index < this.buffer.length && /\s/.test(this.buffer[index])) {
+      index += 1;
+    }
     return this.buffer[index] === "{" ? index : -1;
   }
 
@@ -149,13 +155,27 @@ interface NormalizedProbeSample {
   sourceApp: string | null;
   pid: number | null;
   bundleId: string | null;
+  range?: SelectionTextRange;
   bounds?: Rect;
   mousePosition?: Point;
   capturedAt: number;
   accessibility: string | null;
+  gestureGeneration: number | null;
+  gesturePresent: boolean;
+  gestureButton: string | null;
+  gestureClickCount: number;
+  gestureDidDrag: boolean;
+  gestureMaxDragDistance: number;
+  gestureComplete: boolean;
+  gestureQualifies: boolean;
   usable: boolean;
   stale: boolean;
   discarded: boolean;
+}
+
+interface SelectionTextRange {
+  location: number;
+  length: number;
 }
 
 export interface SelectionSnapshot {
@@ -165,9 +185,11 @@ export interface SelectionSnapshot {
   sourceApp: string;
   pid: number;
   bundleId: string | null;
+  range?: SelectionTextRange;
   bounds?: Rect;
   mousePosition: Point;
   capturedAt: number;
+  gestureGeneration: number;
   consumed: boolean;
 }
 
@@ -196,6 +218,20 @@ function readBounds(value: unknown): Rect | undefined {
     : undefined;
 }
 
+function readRange(value: unknown): SelectionTextRange | undefined {
+  const range = asRecord(value);
+  const location = finiteNumber(range?.location);
+  const length = finiteNumber(range?.length);
+  return location !== null &&
+    length !== null &&
+    Number.isSafeInteger(location) &&
+    Number.isSafeInteger(length) &&
+    location >= 0 &&
+    length >= 0
+    ? { location, length }
+    : undefined;
+}
+
 export function normalizeProbeSample(
   value: unknown,
 ): NormalizedProbeSample | null {
@@ -203,7 +239,9 @@ export function normalizeProbeSample(
   const app = asRecord(raw?.app);
   const mouse = asRecord(raw?.mouse);
   const selectedText = asRecord(raw?.selected_text);
+  const selectedRange = asRecord(raw?.range);
   const boundsResult = asRecord(raw?.bounds);
+  const gesture = asRecord(raw?.gesture);
   const sampleId = finiteNumber(raw?.sampleId);
 
   if (sampleId === null || !Number.isSafeInteger(sampleId) || sampleId < 1) {
@@ -222,6 +260,30 @@ export function normalizeProbeSample(
   const bundleId = typeof rawBundleId === "string" ? rawBundleId : null;
   const capturedUptime = finiteNumber(raw?.captured_at_uptime_seconds);
   const bounds = readBounds(boundsResult?.value);
+  const range = readRange(selectedRange?.value);
+  const generationValue = finiteNumber(gesture?.generation);
+  const gestureGeneration =
+    generationValue !== null &&
+    Number.isSafeInteger(generationValue) &&
+    generationValue > 0
+      ? generationValue
+      : null;
+  const clickCountValue = finiteNumber(gesture?.clickCount);
+  const gestureClickCount =
+    clickCountValue !== null &&
+    Number.isSafeInteger(clickCountValue) &&
+    clickCountValue >= 0
+      ? clickCountValue
+      : 0;
+  const gestureDidDrag = gesture?.didDrag === true;
+  const maxDragDistanceValue = finiteNumber(gesture?.maxDragDistance);
+  const gestureMaxDragDistance =
+    maxDragDistanceValue !== null && maxDragDistanceValue >= 0
+      ? maxDragDistanceValue
+      : 0;
+  const gestureIsComplete = gesture?.complete === true;
+  const gestureButton = typeof gesture?.button === "string" ? gesture.button : null;
+  const gestureIsLeftButton = gestureButton === "left";
   const mousePosition = readPoint(mouse?.position);
   const textIsExact = selectedText?.truncated !== true;
   const textIsUsable =
@@ -236,11 +298,24 @@ export function normalizeProbeSample(
     sourceApp,
     pid,
     bundleId,
+    range,
     bounds,
     mousePosition,
     capturedAt: capturedUptime ?? Date.now() / 1000,
     accessibility:
       typeof raw?.accessibility === "string" ? raw.accessibility : null,
+    gestureGeneration,
+    gesturePresent: gesture !== null,
+    gestureButton,
+    gestureClickCount,
+    gestureDidDrag,
+    gestureMaxDragDistance,
+    gestureComplete: gestureIsComplete,
+    gestureQualifies:
+      gestureGeneration !== null &&
+      gestureIsComplete &&
+      gestureIsLeftButton &&
+      gestureClickCount >= 2,
     usable:
       raw?.usable_selection === true &&
       raw?.stale !== true &&
@@ -262,6 +337,15 @@ interface SelfMouseUpProtection {
   expiresAt: number;
 }
 
+interface ConsumedSelectionFingerprint {
+  selectionId: string;
+  text: string;
+  sourceApp: string;
+  pid: number;
+  bundleId: string | null;
+  range?: SelectionTextRange;
+}
+
 function pointInside(point: Point, bounds: Rect) {
   return (
     point.x >= bounds.x &&
@@ -271,11 +355,19 @@ function pointInside(point: Point, bounds: Rect) {
   );
 }
 
+function sameRange(left: SelectionTextRange, right: SelectionTextRange) {
+  return (
+    left.location === right.location && left.length === right.length
+  );
+}
+
 export class SelectionSession {
   private currentSnapshot: SelectionSnapshot | null = null;
   private windowSelectionId: string | null = null;
   private selfMouseUpProtection: SelfMouseUpProtection | null = null;
+  private consumedSelection: ConsumedSelectionFingerprint | null = null;
   private latestSampleId = 0;
+  private latestGestureGeneration = 0;
 
   constructor(private readonly idFactory: () => string = () => randomUUID()) {}
 
@@ -285,6 +377,64 @@ export class SelectionSession {
 
   get latestHandledSampleId() {
     return this.latestSampleId;
+  }
+
+  diagnosticState(now = Date.now()) {
+    const protection = this.selfMouseUpProtection;
+    return {
+      liveSelectionId: this.currentSnapshot?.selectionId ?? null,
+      consumedSelectionId: this.consumedSelection?.selectionId ?? null,
+      latestHandledSampleId: this.latestSampleId,
+      latestGestureGeneration: this.latestGestureGeneration,
+      selfMouseUpProtection:
+        protection === null
+          ? "none"
+          : now <= protection.expiresAt
+            ? "active"
+            : "expired",
+    } as const;
+  }
+
+  diagnoseProbe(value: unknown) {
+    const sample = normalizeProbeSample(value);
+    if (!sample) {
+      return {
+        usableSelection: false,
+        selectedTextLength: 0,
+        selectedRange: null,
+        gestureGenerationAlreadyConsumed: false,
+        gestureQualifies: false,
+        qualificationReason: "no_gesture",
+        consumedFingerprintMatch: false,
+      } as const;
+    }
+
+    const generationAlreadyConsumed =
+      sample.gestureGeneration !== null &&
+      sample.gestureGeneration <= this.latestGestureGeneration;
+    const qualificationReason = !sample.gesturePresent ||
+      sample.gestureGeneration === null
+      ? "no_gesture"
+      : !sample.gestureComplete || sample.gestureButton !== "left"
+        ? "incomplete"
+        : generationAlreadyConsumed
+          ? "reused_generation"
+          : sample.gestureClickCount >= 2
+            ? "double_click"
+            : sample.gestureDidDrag
+              ? "drag_not_supported_in_pass3"
+              : "single_click";
+
+    return {
+      usableSelection: sample.usable,
+      selectedTextLength: sample.text?.length ?? 0,
+      selectedRange: sample.range ?? null,
+      gestureGenerationAlreadyConsumed: generationAlreadyConsumed,
+      gestureQualifies:
+        sample.gestureQualifies && !generationAlreadyConsumed,
+      qualificationReason,
+      consumedFingerprintMatch: this.isConsumedSelectionReplay(sample),
+    } as const;
   }
 
   handleProbe(value: unknown, now = Date.now()): SessionUpdate {
@@ -298,6 +448,16 @@ export class SelectionSession {
       return { kind: "ignore", reason: "duplicate_probe_record" };
     }
     this.latestSampleId = sample.sampleId;
+    const hasOneShotFreshGesture =
+      sample.gestureQualifies &&
+      sample.gestureGeneration !== null &&
+      sample.gestureGeneration > this.latestGestureGeneration;
+    if (
+      sample.gestureGeneration !== null &&
+      sample.gestureGeneration > this.latestGestureGeneration
+    ) {
+      this.latestGestureGeneration = sample.gestureGeneration;
+    }
 
     if (this.isProtectedSelfMouseUp(sample, now)) {
       this.selfMouseUpProtection = null;
@@ -305,12 +465,12 @@ export class SelectionSession {
     }
 
     if (sample.stale || sample.discarded) {
-      this.clear();
+      this.clearLiveSelection();
       return { kind: "hide", reason: "stale_probe_record" };
     }
 
     if (!sample.usable) {
-      this.clear();
+      this.clearLiveSelection();
       return {
         kind: "hide",
         reason:
@@ -320,6 +480,26 @@ export class SelectionSession {
       };
     }
 
+    if (
+      sample.gestureGeneration !== null &&
+      sample.gestureComplete &&
+      sample.gestureButton === "left" &&
+      sample.gestureClickCount < 2 &&
+      sample.gestureDidDrag
+    ) {
+      this.clearLiveSelection();
+      return { kind: "hide", reason: "drag_not_supported_in_pass3" };
+    }
+
+    if (!hasOneShotFreshGesture) {
+      this.currentSnapshot = null;
+      this.windowSelectionId = null;
+      this.selfMouseUpProtection = null;
+      return this.isConsumedSelectionReplay(sample)
+        ? { kind: "ignore", reason: "consumed_selection_replay" }
+        : { kind: "hide", reason: "nonqualifying_selection_gesture" };
+    }
+
     const snapshot: SelectionSnapshot = {
       selectionId: this.idFactory(),
       sampleId: sample.sampleId,
@@ -327,14 +507,17 @@ export class SelectionSession {
       sourceApp: sample.sourceApp as string,
       pid: sample.pid as number,
       bundleId: sample.bundleId,
+      range: sample.range,
       bounds: sample.bounds,
       mousePosition: sample.mousePosition as Point,
       capturedAt: sample.capturedAt,
+      gestureGeneration: sample.gestureGeneration as number,
       consumed: false,
     };
     this.currentSnapshot = snapshot;
     this.windowSelectionId = null;
     this.selfMouseUpProtection = null;
+    this.consumedSelection = null;
     return { kind: "show", snapshot };
   }
 
@@ -367,12 +550,26 @@ export class SelectionSession {
   consumeClick(selectionId: string, senderIsValid: boolean) {
     if (!this.isLiveSelection(selectionId, senderIsValid)) return null;
     const snapshot = this.currentSnapshot as SelectionSnapshot;
-    snapshot.consumed = true;
+    const consumedSnapshot = { ...snapshot, consumed: true };
+    this.consumedSelection = {
+      selectionId: snapshot.selectionId,
+      text: snapshot.text,
+      sourceApp: snapshot.sourceApp,
+      pid: snapshot.pid,
+      bundleId: snapshot.bundleId,
+      range: snapshot.range ? { ...snapshot.range } : undefined,
+    };
+    this.currentSnapshot = null;
     this.windowSelectionId = null;
-    return { ...snapshot };
+    return consumedSnapshot;
   }
 
   clear() {
+    this.clearLiveSelection();
+    this.consumedSelection = null;
+  }
+
+  private clearLiveSelection() {
     this.currentSnapshot = null;
     this.windowSelectionId = null;
     this.selfMouseUpProtection = null;
@@ -399,9 +596,31 @@ export class SelectionSession {
       return false;
     }
     return (
-      protection.selectionId === this.currentSnapshot?.selectionId &&
       sample.mousePosition !== undefined &&
       pointInside(sample.mousePosition, protection.windowBounds)
     );
+  }
+
+  private isConsumedSelectionReplay(sample: NormalizedProbeSample) {
+    const consumed = this.consumedSelection;
+    if (
+      consumed === null ||
+      sample.text !== consumed.text ||
+      sample.sourceApp !== consumed.sourceApp ||
+      sample.pid !== consumed.pid ||
+      sample.bundleId !== consumed.bundleId
+    ) {
+      return false;
+    }
+
+    if (consumed.range && sample.range) {
+      return sameRange(consumed.range, sample.range);
+    }
+
+    // Missing AX range cannot prove that an identical AX value is a genuinely
+    // new selection. Bounds and mouse position are deliberately excluded from
+    // replay identity because Cursor often omits bounds and ordinary clicks
+    // move the pointer while re-exposing the same selected text.
+    return true;
   }
 }

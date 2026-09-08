@@ -15,6 +15,9 @@ import {
   type PopoverContentHeightPayload,
   type PopoverStatePayload,
 } from "./popoverIpc";
+import { SelectionActionController } from "./selection/SelectionActionController";
+import { isValidSelectionBounds } from "./selection/position";
+import type { SelectionSnapshot } from "./selection/selectionSession";
 
 let mainWindow: BrowserWindow | null = null;
 let floatingWindow: BrowserWindow | null = null;
@@ -33,6 +36,7 @@ let pendingReactPopoverState: PopoverStatePayload | null = null;
 let floatingWindowAnchor: { x: number; y: number } | null = null;
 let globalMouseMonitorProcess: ChildProcess | null = null;
 let globalMouseMonitorOutput = "";
+let selectionActionController: SelectionActionController | null = null;
 let applicationIsQuitting = false;
 const isSmokeTest = process.argv.includes("--smoke-test");
 const CLIPBOARD_POLL_INTERVAL_MS = 500;
@@ -194,6 +198,24 @@ function isSingleEnglishWord(value: string) {
   return /^[A-Za-z]+$/.test(value);
 }
 
+function selectionAnchor(snapshot: SelectionSnapshot) {
+  if (snapshot.bounds) {
+    const boundsCenter = {
+      x: snapshot.bounds.x + snapshot.bounds.width / 2,
+      y: snapshot.bounds.y + snapshot.bounds.height / 2,
+    };
+    const { workArea } = screen.getDisplayNearestPoint(boundsCenter);
+    if (isValidSelectionBounds(snapshot.bounds, workArea)) {
+      return {
+        x: snapshot.bounds.x + snapshot.bounds.width,
+        y: snapshot.bounds.y + snapshot.bounds.height / 2,
+      };
+    }
+  }
+
+  return { ...snapshot.mousePosition };
+}
+
 function normalizePartOfSpeech(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
@@ -343,6 +365,33 @@ function startGlobalMouseMonitor() {
   });
 
   console.log("[floating] Global mouse monitor started.");
+}
+
+function startSelectionActionController() {
+  if (process.platform !== "darwin" || selectionActionController !== null) {
+    return;
+  }
+
+  const repoRoot = path.resolve(__dirname, "..");
+  const controller = new SelectionActionController({
+    repoRoot,
+    rendererPath: path.join(repoRoot, "dist/selection-action.html"),
+    probePath: path.join(repoRoot, "dist-native/selection-probe"),
+    preloadPath: path.join(__dirname, "selection/preload.js"),
+    onAcceptedSelection(snapshot) {
+      handleAcceptedSelection(snapshot);
+    },
+  });
+
+  try {
+    controller.start();
+    selectionActionController = controller;
+    console.log("[selection-action] Production controller started.");
+  } catch (error) {
+    controller.stop();
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[selection-action] Production controller unavailable: ${message}`);
+  }
 }
 
 function moveFloatingWindowNearCursor() {
@@ -614,9 +663,8 @@ function registerReactPopoverIpc() {
     }
 
     const snapshot = failedRequest.snapshot;
-    // Invalidate the old Retry ID synchronously, before any asynchronous work.
-    const requestId = beginRequest(snapshot.word, snapshot.cursorAnchor);
-    void executeAIRequest(snapshot, requestId);
+    // The shared entry allocates a new ID synchronously, invalidating this Retry.
+    void startTranslationRequest(snapshot).completion;
   });
 
   ipcMain.on(POPOVER_IPC_CHANNELS.ready, (event) => {
@@ -763,7 +811,44 @@ function beginRequest(word: string, anchor: Readonly<{ x: number; y: number }>) 
   return requestId;
 }
 
+function startTranslationRequest(
+  snapshot: RequestSnapshot,
+  existingRequestId?: number,
+) {
+  const requestId =
+    existingRequestId ?? beginRequest(snapshot.word, snapshot.cursorAnchor);
+  return {
+    requestId,
+    completion: executeAIRequest(snapshot, requestId),
+  };
+}
+
+function handleAcceptedSelection(snapshot: SelectionSnapshot) {
+  const word = snapshot.text.trim();
+  if (!isSingleEnglishWord(word)) {
+    console.log(
+      `[selection-action] ignored accepted selection sample=${snapshot.sampleId} reason=invalid_single_english_word length=${word.length}`,
+    );
+    return null;
+  }
+
+  const requestSnapshot: RequestSnapshot = {
+    word,
+    source_app: snapshot.sourceApp,
+    user_goal: DEFAULT_USER_GOAL,
+    cursorAnchor: selectionAnchor(snapshot),
+  };
+  const request = startTranslationRequest(requestSnapshot);
+  console.log(
+    `[selection-action] translation started sample=${snapshot.sampleId} request=${request.requestId} app=${JSON.stringify(snapshot.sourceApp)}`,
+  );
+  return request.requestId;
+}
+
 async function handleDetectedWord(word: string) {
+  selectionActionController?.dismissForExternalTrigger(
+    "clipboard_request_started",
+  );
   const anchor = screen.getCursorScreenPoint();
   const requestId = beginRequest(word, anchor);
   let snapshot: RequestSnapshot = {
@@ -785,7 +870,7 @@ async function handleDetectedWord(word: string) {
     }
 
     snapshot = { ...snapshot, source_app: currentApplication };
-    await executeAIRequest(snapshot, requestId);
+    await startTranslationRequest(snapshot, requestId).completion;
   } catch (error) {
     await showRequestFailure(error, snapshot, requestId, false);
   }
@@ -947,7 +1032,7 @@ function createWindow() {
 
     if (isSmokeTest) {
       setTimeout(() => {
-        if (BrowserWindow.getAllWindows().length === 0) {
+        if (mainWindow === null) {
           console.log("[spike] Background survival verified after window close.");
           app.quit();
         }
@@ -970,6 +1055,7 @@ if (!hasSingleInstanceLock) {
       `[app] Electron started pid=${process.pid} renderer=${POPOVER_RENDERER}`,
     );
     startGlobalMouseMonitor();
+    startSelectionActionController();
     startClipboardMonitor();
     createWindow();
 
@@ -992,6 +1078,8 @@ if (!hasSingleInstanceLock) {
 
     globalMouseMonitorProcess?.kill();
     globalMouseMonitorProcess = null;
+    selectionActionController?.stop();
+    selectionActionController = null;
   });
 
   app.on("window-all-closed", () => {

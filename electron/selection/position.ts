@@ -3,7 +3,8 @@ import type { Point, Rect } from "./contracts";
 export const ACTION_WINDOW_SIZE = 36;
 export const ACTION_HIT_SIZE = 32;
 export const ACTION_SURFACE_SIZE = 28;
-export const ACTION_WINDOW_INSET = (ACTION_WINDOW_SIZE - ACTION_SURFACE_SIZE) / 2;
+export const ACTION_WINDOW_INSET =
+  (ACTION_WINDOW_SIZE - ACTION_SURFACE_SIZE) / 2;
 export const SELECTION_VISUAL_GAP = 6;
 export const MOUSE_FALLBACK_HORIZONTAL_OFFSET = 8;
 export const MOUSE_FALLBACK_VERTICAL_GAP = 3;
@@ -123,7 +124,11 @@ export function calculateActionPosition({
         ),
       ),
       y: Math.round(
-        clamp(y, workArea.y, Math.max(workArea.y, workBottom - ACTION_WINDOW_SIZE)),
+        clamp(
+          y,
+          workArea.y,
+          Math.max(workArea.y, workBottom - ACTION_WINDOW_SIZE),
+        ),
       ),
       anchorSource: "mouse_position",
       placement: isBelow

@@ -13,7 +13,7 @@
     "build:selection-action": "npm run build:renderer && npm run build:main && mkdir -p dist-native && xcrun clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=14.0 native/SelectionProbe.m -framework AppKit -framework ApplicationServices -o dist-native/selection-probe",
     "test:selection-action": "npm run build:main && node --test dist-electron/selection-spike/selectionAction.test.js",
     "spike:selection-action": "npm run build:selection-action && electron dist-electron/selection-spike/main.js",
-    "build:native": "mkdir -p dist-native && xcrun clang -fobjc-arc -mmacosx-version-min=14.0 native/FrontmostApp.m -framework AppKit -o dist-native/frontmost-app && xcrun clang -fobjc-arc -mmacosx-version-min=14.0 native/GlobalMouseMonitor.m -framework ApplicationServices -o dist-native/global-mouse-monitor",
+    "build:native": "mkdir -p dist-native && xcrun clang -fobjc-arc -mmacosx-version-min=14.0 native/FrontmostApp.m -framework AppKit -o dist-native/frontmost-app && xcrun clang -fobjc-arc -mmacosx-version-min=14.0 native/GlobalMouseMonitor.m -framework ApplicationServices -o dist-native/global-mouse-monitor && xcrun clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=14.0 native/SelectionProbe.m -framework AppKit -framework ApplicationServices -o dist-native/selection-probe",
     "build": "npm run build:renderer && npm run build:main && npm run build:native",
     "start": "npm run build && electron .",
     "smoke": "npm run build && electron . --smoke-test"
