@@ -8,6 +8,7 @@
     "dev:popover": "vite --host 127.0.0.1 --port 4173 --strictPort",
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
+    "test:native-helper-paths": "npm run build:main && node --test dist-electron/nativeHelperPaths.test.js",
     "test:recovery": "npm run build:main && node --test dist-electron/aiRecovery.test.js dist-electron/recoveryLifecycle.test.js",
     "spike:selection": "mkdir -p dist-native && xcrun clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=14.0 native/SelectionProbe.m -framework AppKit -framework ApplicationServices -o dist-native/selection-probe && dist-native/selection-probe",
     "build:selection-action": "npm run build:renderer && npm run build:main && mkdir -p dist-native && xcrun clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=14.0 native/SelectionProbe.m -framework AppKit -framework ApplicationServices -o dist-native/selection-probe",
@@ -15,6 +16,7 @@
     "spike:selection-action": "npm run build:selection-action && electron dist-electron/selection-spike/main.js",
     "build:native": "mkdir -p dist-native && xcrun clang -fobjc-arc -mmacosx-version-min=14.0 native/FrontmostApp.m -framework AppKit -o dist-native/frontmost-app && xcrun clang -fobjc-arc -mmacosx-version-min=14.0 native/GlobalMouseMonitor.m -framework ApplicationServices -o dist-native/global-mouse-monitor && xcrun clang -fobjc-arc -Wall -Wextra -mmacosx-version-min=14.0 native/SelectionProbe.m -framework AppKit -framework ApplicationServices -o dist-native/selection-probe",
     "build": "npm run build:renderer && npm run build:main && npm run build:native",
+    "package:mac:dir": "npm run build && electron-builder --mac --dir --arm64",
     "start": "npm run build && electron .",
     "smoke": "npm run build && electron . --smoke-test"
   },
@@ -28,6 +30,7 @@
     "@types/react-dom": "19.2.4",
     "@vitejs/plugin-react": "6.0.5",
     "electron": "43.4.0",
+    "electron-builder": "^26.15.3",
     "typescript": "5.9.3",
     "vite": "8.2.1"
   }

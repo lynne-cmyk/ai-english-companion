@@ -2,6 +2,7 @@ node_modules/
 dist/
 dist-electron/
 dist-native/
+release/
 .DS_Store
 npm-debug.log*
 server/dist/

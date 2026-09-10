@@ -1,0 +1,36 @@
+appId: com.lynne.aienglishcompanion
+productName: AI English Companion
+asar: true
+
+directories:
+  output: release
+
+files:
+  - dist/index.html
+  - dist/popover-window.html
+  - dist/selection-action.html
+  - dist/assets/**/*
+  - dist-electron/main.js
+  - dist-electron/aiRecovery.js
+  - dist-electron/nativeHelperPaths.js
+  - dist-electron/popoverIpc.js
+  - dist-electron/preload.js
+  - dist-electron/selection/**/*
+  - package.json
+  - "!node_modules/**/*"
+  - "!**/*.test.js"
+  - "!**/*.map"
+
+extraResources:
+  - from: dist-native/frontmost-app
+    to: native/frontmost-app
+  - from: dist-native/global-mouse-monitor
+    to: native/global-mouse-monitor
+  - from: dist-native/selection-probe
+    to: native/selection-probe
+
+mac:
+  target:
+    - target: dir
+      arch:
+        - arm64

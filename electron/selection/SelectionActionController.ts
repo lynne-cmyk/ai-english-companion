@@ -26,6 +26,7 @@ export interface SelectionActionControllerOptions {
   repoRoot: string;
   rendererPath: string;
   probePath: string;
+  probeWorkingDirectory?: string;
   preloadPath: string;
   onAcceptedSelection(snapshot: SelectionSnapshot): void | Promise<void>;
 }
@@ -411,7 +412,7 @@ export class SelectionActionController {
   private startProbe() {
     if (this.probeProcess !== null || this.quitting) return;
     const child = spawn(this.options.probePath, [], {
-      cwd: this.options.repoRoot,
+      cwd: this.options.probeWorkingDirectory ?? this.options.repoRoot,
       stdio: ["pipe", "pipe", "pipe"],
     });
     child.stdin.end();

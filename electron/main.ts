@@ -15,6 +15,10 @@ import {
   type PopoverContentHeightPayload,
   type PopoverStatePayload,
 } from "./popoverIpc";
+import {
+  resolveNativeHelperPath,
+  resolveNativeHelperWorkingDirectory,
+} from "./nativeHelperPaths";
 import { SelectionActionController } from "./selection/SelectionActionController";
 import { isValidSelectionBounds } from "./selection/position";
 import type { SelectionSnapshot } from "./selection/selectionSession";
@@ -51,6 +55,20 @@ const AI_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_USER_GOAL = "learn English while working";
 const POPOVER_RENDERER =
   process.env.AI_ENGLISH_POPOVER_RENDERER === "legacy" ? "legacy" : "react";
+
+function nativeHelperContext() {
+  return {
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    developmentRoot: path.resolve(__dirname, ".."),
+  };
+}
+
+function nativeHelperPath(
+  helper: Parameters<typeof resolveNativeHelperPath>[0],
+) {
+  return resolveNativeHelperPath(helper, nativeHelperContext());
+}
 
 const PART_OF_SPEECH_LABELS = new Set([
   "NOUN",
@@ -246,7 +264,7 @@ function isExplanationResult(value: unknown): value is ExplanationResult {
 }
 
 function getFrontmostApplicationName() {
-  const helperPath = path.join(__dirname, "../dist-native/frontmost-app");
+  const helperPath = nativeHelperPath("frontmostApp");
 
   return new Promise<string>((resolve) => {
     execFile(helperPath, { timeout: 2_000 }, (error, stdout) => {
@@ -304,13 +322,19 @@ function startGlobalMouseMonitor() {
     return;
   }
 
-  const helperPath = path.join(
-    __dirname,
-    "../dist-native/global-mouse-monitor",
-  );
-  const monitorProcess = spawn(helperPath, [], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const helperPath = nativeHelperPath("globalMouseMonitor");
+  let monitorProcess: ChildProcess;
+
+  try {
+    monitorProcess = spawn(helperPath, [], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[floating] Failed to start mouse monitor: ${message}`);
+    return;
+  }
+
   globalMouseMonitorProcess = monitorProcess;
 
   monitorProcess.stdout?.on("data", (chunk: Buffer) => {
@@ -373,10 +397,14 @@ function startSelectionActionController() {
   }
 
   const repoRoot = path.resolve(__dirname, "..");
+  const selectionProbePath = nativeHelperPath("selectionProbe");
   const controller = new SelectionActionController({
     repoRoot,
     rendererPath: path.join(repoRoot, "dist/selection-action.html"),
-    probePath: path.join(repoRoot, "dist-native/selection-probe"),
+    probePath: selectionProbePath,
+    probeWorkingDirectory: resolveNativeHelperWorkingDirectory(
+      nativeHelperContext(),
+    ),
     preloadPath: path.join(__dirname, "selection/preload.js"),
     onAcceptedSelection(snapshot) {
       handleAcceptedSelection(snapshot);
