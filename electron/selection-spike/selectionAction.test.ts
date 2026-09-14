@@ -64,6 +64,10 @@ function encodedSample(value: unknown) {
   return `[selection-probe] sample\n${JSON.stringify(value, null, 2)}\n`;
 }
 
+function encodedStatus(value: unknown) {
+  return `[selection-probe] status\n${JSON.stringify(value)}\n`;
+}
+
 test("parser reconstructs one complete multi-line sample", () => {
   const parser = new ProbeSampleParser();
   const encoded = encodedSample(probeSample(1));
@@ -72,6 +76,56 @@ test("parser reconstructs one complete multi-line sample", () => {
   const events = parser.push(encoded.slice(midpoint));
   assert.equal(events.length, 1);
   assert.equal(events[0].type, "sample");
+});
+
+test("parser separates startup status from selection samples", () => {
+  const parser = new ProbeSampleParser();
+  const status = {
+    type: "probe_status",
+    version: 1,
+    ready: true,
+    accessibility: "trusted",
+    listen_preflight: "granted",
+    event_tap_operational: true,
+    pid: 123,
+  };
+  const events = parser.push(
+    `human startup log\n${encodedStatus(status)}${encodedSample(probeSample(1))}`,
+  );
+  assert.equal(events.length, 2);
+  assert.deepEqual(events[0], { type: "status", value: status });
+  assert.equal(events[1].type, "sample");
+});
+
+test("parser reconstructs a startup status split across stdout chunks", () => {
+  const parser = new ProbeSampleParser();
+  const encoded = encodedStatus({
+    type: "probe_status",
+    version: 1,
+    ready: true,
+    accessibility: "trusted",
+    listen_preflight: "not_granted",
+    event_tap_operational: true,
+    pid: 321,
+  });
+  const markerBoundary = encoded.indexOf("status") + 3;
+  const jsonBoundary = encoded.indexOf("{") + 18;
+  assert.deepEqual(parser.push(encoded.slice(0, markerBoundary)), []);
+  assert.deepEqual(
+    parser.push(encoded.slice(markerBoundary, jsonBoundary)),
+    [],
+  );
+  const events = parser.push(encoded.slice(jsonBoundary));
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "status");
+});
+
+test("parser reports malformed startup status independently", () => {
+  const parser = new ProbeSampleParser();
+  assert.deepEqual(
+    parser.push('[selection-probe] status\n{"version":}\n'),
+    [{ type: "statusMalformed", reason: "invalid_json" }],
+  );
 });
 
 test("parser reports malformed balanced JSON", () => {

@@ -21,6 +21,13 @@ import {
   SelectionSession,
   type SelectionSnapshot,
 } from "./selectionSession";
+import {
+  parseProbeStartupStatus,
+  probeEvidenceFromStartupStatus,
+  type ProbePermissionEvidence,
+} from "../permissions/permissionState";
+
+const PROBE_STARTUP_TIMEOUT_MS = 1_500;
 
 export interface SelectionActionControllerOptions {
   repoRoot: string;
@@ -29,6 +36,7 @@ export interface SelectionActionControllerOptions {
   probeWorkingDirectory?: string;
   preloadPath: string;
   onAcceptedSelection(snapshot: SelectionSnapshot): void | Promise<void>;
+  onProbePermissionStateChange?(state: ProbePermissionEvidence): void;
 }
 
 function isOpaqueSelectionId(value: unknown): value is string {
@@ -43,6 +51,21 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function resultValue(value: unknown) {
   return asRecord(value)?.value;
+}
+
+function startupStatusDiagnostic(value: unknown, childPid: number | undefined) {
+  const status = asRecord(value);
+  return {
+    type: status?.type ?? null,
+    version: status?.version ?? null,
+    ready: status?.ready ?? null,
+    accessibility: status?.accessibility ?? null,
+    listenPreflight: status?.listen_preflight ?? null,
+    eventTapCreated: status?.event_tap_operational ?? null,
+    eventTapCreatedType: typeof status?.event_tap_operational,
+    statusPid: status?.pid ?? null,
+    childPid: childPid ?? null,
+  };
 }
 
 function probeDiagnostic(value: unknown) {
@@ -97,11 +120,13 @@ export class SelectionActionController {
   private rendererLoaded = false;
   private started = false;
   private quitting = false;
+  private probeGeneration = 0;
+  private probeStartupTimer: NodeJS.Timeout | null = null;
   private currentRendererState: SelectionActionRendererState = {
     visible: false,
     selectionId: null,
   };
-  private readonly parser = new ProbeSampleParser();
+  private parser = new ProbeSampleParser();
   private readonly session = new SelectionSession();
 
   constructor(private readonly options: SelectionActionControllerOptions) {}
@@ -134,7 +159,18 @@ export class SelectionActionController {
 
     const child = this.probeProcess;
     this.probeProcess = null;
+    this.clearProbeStartupTimer();
     if (child && !child.killed) child.kill("SIGTERM");
+  }
+
+  restartProbeForPermissionRecheck() {
+    if (!this.started || this.quitting) return null;
+    this.invalidateButton("permission_recheck");
+    const previous = this.probeProcess;
+    this.probeProcess = null;
+    this.clearProbeStartupTimer();
+    if (previous && !previous.killed) previous.kill("SIGTERM");
+    return this.startProbe();
   }
 
   private readonly handleReady = (event: IpcMainEvent) => {
@@ -410,19 +446,162 @@ export class SelectionActionController {
   }
 
   private startProbe() {
-    if (this.probeProcess !== null || this.quitting) return;
-    const child = spawn(this.options.probePath, [], {
-      cwd: this.options.probeWorkingDirectory ?? this.options.repoRoot,
-      stdio: ["pipe", "pipe", "pipe"],
+    if (this.probeProcess !== null || this.quitting) return null;
+    const generation = ++this.probeGeneration;
+    this.parser = new ProbeSampleParser();
+    this.publishProbePermissionState({
+      generation,
+      probe: "starting",
+      accessibility: "unknown",
+      inputMonitoring: "unknown",
+      listenPreflight: "unknown",
+      eventTapCreated: null,
+      pid: null,
     });
+
+    const probeWorkingDirectory =
+      this.options.probeWorkingDirectory ?? this.options.repoRoot;
+    console.log(
+      `[selection-action] probe_spawn_attempt ${JSON.stringify({
+        generation,
+        executablePath: this.options.probePath,
+        cwd: probeWorkingDirectory,
+        stdio: ["pipe", "pipe", "pipe"],
+        env: "inherited",
+        detached: false,
+        shell: false,
+      })}`,
+    );
+
+    let child: ChildProcessWithoutNullStreams;
+    try {
+      child = spawn(this.options.probePath, [], {
+        cwd: probeWorkingDirectory,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.publishProbeFailure(generation, "probe_spawn_failed");
+      console.error(`[selection-action] probe failed: ${message}`);
+      return generation;
+    }
     child.stdin.end();
     this.probeProcess = child;
+    let handshakeReceived = false;
+
+    const failCurrentProbe = (reason: string, terminate: boolean) => {
+      if (this.probeProcess !== child || generation !== this.probeGeneration) {
+        console.log(
+          `[selection-action] probe_failure_ignored ${JSON.stringify({
+            generation,
+            currentGeneration: this.probeGeneration,
+            pid: child.pid ?? null,
+            reason: "stale_generation",
+            failure: reason,
+          })}`,
+        );
+        return;
+      }
+      this.probeProcess = null;
+      this.clearProbeStartupTimer();
+      this.invalidateButton(reason);
+      this.publishProbeFailure(generation, reason);
+      if (terminate && !child.killed) child.kill("SIGTERM");
+    };
+
+    this.probeStartupTimer = setTimeout(() => {
+      console.warn(
+        `[selection-action] probe_handshake_timeout ${JSON.stringify({
+          generation,
+          pid: child.pid ?? null,
+          handshakeReceived,
+          alive: child.exitCode === null && !child.killed,
+          timeoutMs: PROBE_STARTUP_TIMEOUT_MS,
+        })}`,
+      );
+      failCurrentProbe("probe_startup_timeout", true);
+    }, PROBE_STARTUP_TIMEOUT_MS);
+
+    child.on("spawn", () => {
+      console.log(
+        `[selection-action] probe_spawned ${JSON.stringify({
+          generation,
+          pid: child.pid ?? null,
+        })}`,
+      );
+    });
 
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
+      if (this.probeProcess !== child || generation !== this.probeGeneration) {
+        console.log(
+          `[selection-action] probe_stdout_ignored ${JSON.stringify({
+            generation,
+            currentGeneration: this.probeGeneration,
+            pid: child.pid ?? null,
+            bytes: Buffer.byteLength(chunk, "utf8"),
+            reason: "stale_generation",
+          })}`,
+        );
+        return;
+      }
+      if (!handshakeReceived) {
+        console.log(
+          `[selection-action] probe_startup_stdout ${JSON.stringify({
+            generation,
+            pid: child.pid ?? null,
+            bytes: Buffer.byteLength(chunk, "utf8"),
+            containsStatusMarker: chunk.includes("[selection-probe] status"),
+          })}`,
+        );
+      }
       for (const event of this.parser.push(chunk)) {
-        if (event.type === "sample") this.handleProbeSample(event.value);
-        else if (event.type === "overflow") {
+        if (event.type === "status") {
+          if (handshakeReceived) continue;
+          const status = parseProbeStartupStatus(event.value);
+          if (status === null || status.pid !== child.pid) {
+            console.warn(
+              `[selection-action] probe_status_rejected ${JSON.stringify({
+                generation,
+                currentGeneration: this.probeGeneration,
+                ...startupStatusDiagnostic(event.value, child.pid),
+                reason: status === null ? "invalid_contract" : "pid_mismatch",
+              })}`,
+            );
+            failCurrentProbe("probe_status_invalid", true);
+            return;
+          }
+          handshakeReceived = true;
+          this.clearProbeStartupTimer();
+          const evidence = probeEvidenceFromStartupStatus(generation, status);
+          this.publishProbePermissionState(evidence);
+          console.log(
+            `[selection-action] probe_status_accepted ${JSON.stringify({
+              generation,
+              currentGeneration: this.probeGeneration,
+              pid: child.pid ?? null,
+            })}`,
+          );
+          console.log(
+            `[permission-state] native_status ${JSON.stringify({
+              generation,
+              accessibility: evidence.accessibility,
+              inputMonitoring: evidence.inputMonitoring,
+              listenPreflight: evidence.listenPreflight,
+              eventTapCreated: evidence.eventTapCreated,
+              pid: evidence.pid,
+            })}`,
+          );
+        } else if (event.type === "statusMalformed") {
+          failCurrentProbe("probe_status_malformed", true);
+          console.warn(
+            `[selection-action] malformed probe startup status reason=${event.reason}`,
+          );
+          return;
+        } else if (event.type === "sample") {
+          if (handshakeReceived) this.handleProbeSample(event.value);
+          else console.warn("[selection-action] sample ignored before startup status");
+        } else if (event.type === "overflow") {
           this.invalidateButton("probe_record_overflow");
           console.warn(
             `[selection-action] probe_overflow reason=${event.reason} ` +
@@ -439,24 +618,78 @@ export class SelectionActionController {
 
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
-      const message = chunk.trim();
-      if (message) console.warn(`[selection-probe] ${message}`);
+      if (this.probeProcess !== child || generation !== this.probeGeneration) {
+        return;
+      }
+      for (const line of chunk.split(/\r?\n/)) {
+        const message = line.trim();
+        if (message) {
+          console.warn(
+            `[selection-probe] stderr generation=${generation} pid=${child.pid ?? "unknown"} ${message}`,
+          );
+        }
+      }
     });
 
     child.on("error", (error) => {
-      if (this.probeProcess === child) this.probeProcess = null;
-      this.invalidateButton("probe_process_error");
+      if (this.probeProcess !== child || generation !== this.probeGeneration) {
+        return;
+      }
+      failCurrentProbe("probe_process_error", false);
       console.error(`[selection-action] probe failed: ${error.message}`);
     });
 
     child.on("exit", (code, signal) => {
-      if (this.probeProcess === child) this.probeProcess = null;
-      this.invalidateButton("probe_process_exit");
+      if (this.probeProcess !== child || generation !== this.probeGeneration) {
+        console.log(
+          `[selection-action] probe_exit_ignored ${JSON.stringify({
+            generation,
+            currentGeneration: this.probeGeneration,
+            pid: child.pid ?? null,
+            code,
+            signal,
+            reason: "stale_generation",
+          })}`,
+        );
+        return;
+      }
+      failCurrentProbe("probe_process_exit", false);
       if (!this.quitting) {
         console.warn(
-          `[selection-action] probe exited code=${code} signal=${signal}`,
+          `[selection-action] probe_exited ${JSON.stringify({
+            generation,
+            pid: child.pid ?? null,
+            code,
+            signal,
+            handshakeReceived,
+          })}`,
         );
       }
+    });
+    return generation;
+  }
+
+  private clearProbeStartupTimer() {
+    if (this.probeStartupTimer !== null) {
+      clearTimeout(this.probeStartupTimer);
+      this.probeStartupTimer = null;
+    }
+  }
+
+  private publishProbePermissionState(state: ProbePermissionEvidence) {
+    this.options.onProbePermissionStateChange?.(state);
+  }
+
+  private publishProbeFailure(generation: number, failureReason: string) {
+    this.publishProbePermissionState({
+      generation,
+      probe: "failed",
+      accessibility: "unknown",
+      inputMonitoring: "unknown",
+      listenPreflight: "unknown",
+      eventTapCreated: null,
+      pid: null,
+      failureReason,
     });
   }
 

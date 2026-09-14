@@ -13,6 +13,9 @@ files:
   - dist-electron/main.js
   - dist-electron/aiRecovery.js
   - dist-electron/nativeHelperPaths.js
+  - dist-electron/permissions/contracts.js
+  - dist-electron/permissions/permissionState.js
+  - dist-electron/permissions/preload.js
   - dist-electron/popoverIpc.js
   - dist-electron/preload.js
   - dist-electron/selection/**/*

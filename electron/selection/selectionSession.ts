@@ -3,6 +3,11 @@ import type { Point, Rect } from "./contracts";
 import { isValidPoint, isValidSelectionBounds } from "./position";
 
 const SAMPLE_MARKER = "[selection-probe] sample";
+const STATUS_MARKER = "[selection-probe] status";
+const PROBE_MARKERS = [
+  { marker: SAMPLE_MARKER, type: "sample" as const },
+  { marker: STATUS_MARKER, type: "status" as const },
+];
 // SelectionProbe emits bounded but detailed metadata for up to 64 AX nodes.
 // 256KB keeps that legitimate pretty-printed record bounded without mixing
 // unrelated stdout because parsing begins only after the exact sample marker.
@@ -16,6 +21,8 @@ export const DRAG_SELECTION_THRESHOLD_POINTS = 4;
 
 export type ProbeParserEvent =
   | { type: "sample"; value: unknown }
+  | { type: "status"; value: unknown }
+  | { type: "statusMalformed"; reason: string }
   | { type: "malformed"; reason: string }
   | {
       type: "overflow";
@@ -36,27 +43,36 @@ export class ProbeSampleParser {
     const events: ProbeParserEvent[] = [];
 
     while (this.buffer.length > 0) {
-      const markerIndex = this.buffer.indexOf(SAMPLE_MARKER);
-      if (markerIndex < 0) {
+      const nextMarker = this.findNextMarker();
+      if (nextMarker === null) {
         const retainedLength = Math.min(
           this.buffer.length,
-          SAMPLE_MARKER.length - 1,
+          Math.max(...PROBE_MARKERS.map(({ marker }) => marker.length)) - 1,
         );
         this.buffer = this.buffer.slice(-retainedLength);
         break;
       }
 
-      if (markerIndex > 0) this.buffer = this.buffer.slice(markerIndex);
+      if (nextMarker.index > 0) {
+        this.buffer = this.buffer.slice(nextMarker.index);
+      }
 
-      const jsonStart = this.findJsonStart();
+      const jsonStart = this.findJsonStart(nextMarker.marker.length);
       if (jsonStart < 0) {
         if (Buffer.byteLength(this.buffer, "utf8") > this.maximumRecordSize) {
-          events.push({
-            type: "overflow",
-            reason: "record_buffer_limit",
-            observedBytes: Buffer.byteLength(this.buffer, "utf8"),
-            limitBytes: this.maximumRecordSize,
-          });
+          if (nextMarker.type === "status") {
+            events.push({
+              type: "statusMalformed",
+              reason: "record_buffer_limit",
+            });
+          } else {
+            events.push({
+              type: "overflow",
+              reason: "record_buffer_limit",
+              observedBytes: Buffer.byteLength(this.buffer, "utf8"),
+              limitBytes: this.maximumRecordSize,
+            });
+          }
           this.buffer = "";
         }
         break;
@@ -64,28 +80,36 @@ export class ProbeSampleParser {
 
       const recordEnd = this.findJsonEnd(jsonStart);
       if (recordEnd < 0) {
-        const nextMarker = this.buffer.indexOf(
-          SAMPLE_MARKER,
-          jsonStart + 1,
-        );
-        if (nextMarker >= 0) {
-          events.push({ type: "malformed", reason: "record_interrupted" });
-          this.buffer = this.buffer.slice(nextMarker);
+        const followingMarker = this.findNextMarker(jsonStart + 1);
+        if (followingMarker !== null) {
+          events.push(
+            nextMarker.type === "status"
+              ? { type: "statusMalformed", reason: "record_interrupted" }
+              : { type: "malformed", reason: "record_interrupted" },
+          );
+          this.buffer = this.buffer.slice(followingMarker.index);
           continue;
         }
         if (
           Buffer.byteLength(this.buffer.slice(jsonStart), "utf8") >
           this.maximumRecordSize
         ) {
-          events.push({
-            type: "overflow",
-            reason: "record_buffer_limit",
-            observedBytes: Buffer.byteLength(
-              this.buffer.slice(jsonStart),
-              "utf8",
-            ),
-            limitBytes: this.maximumRecordSize,
-          });
+          if (nextMarker.type === "status") {
+            events.push({
+              type: "statusMalformed",
+              reason: "record_buffer_limit",
+            });
+          } else {
+            events.push({
+              type: "overflow",
+              reason: "record_buffer_limit",
+              observedBytes: Buffer.byteLength(
+                this.buffer.slice(jsonStart),
+                "utf8",
+              ),
+              limitBytes: this.maximumRecordSize,
+            });
+          }
           this.buffer = "";
         }
         break;
@@ -95,27 +119,54 @@ export class ProbeSampleParser {
       this.buffer = this.buffer.slice(recordEnd + 1);
 
       if (Buffer.byteLength(record, "utf8") > this.maximumRecordSize) {
-        events.push({
-          type: "overflow",
-          reason: "record_buffer_limit",
-          observedBytes: Buffer.byteLength(record, "utf8"),
-          limitBytes: this.maximumRecordSize,
-        });
+        if (nextMarker.type === "status") {
+          events.push({
+            type: "statusMalformed",
+            reason: "record_buffer_limit",
+          });
+        } else {
+          events.push({
+            type: "overflow",
+            reason: "record_buffer_limit",
+            observedBytes: Buffer.byteLength(record, "utf8"),
+            limitBytes: this.maximumRecordSize,
+          });
+        }
         continue;
       }
 
       try {
-        events.push({ type: "sample", value: JSON.parse(record) });
+        events.push({ type: nextMarker.type, value: JSON.parse(record) });
       } catch {
-        events.push({ type: "malformed", reason: "invalid_json" });
+        events.push(
+          nextMarker.type === "status"
+            ? { type: "statusMalformed", reason: "invalid_json" }
+            : { type: "malformed", reason: "invalid_json" },
+        );
       }
     }
 
     return events;
   }
 
-  private findJsonStart() {
-    let index = SAMPLE_MARKER.length;
+  private findNextMarker(fromIndex = 0) {
+    let result: {
+      index: number;
+      marker: string;
+      type: "sample" | "status";
+    } | null = null;
+
+    for (const candidate of PROBE_MARKERS) {
+      const index = this.buffer.indexOf(candidate.marker, fromIndex);
+      if (index >= 0 && (result === null || index < result.index)) {
+        result = { index, ...candidate };
+      }
+    }
+    return result;
+  }
+
+  private findJsonStart(markerLength: number) {
+    let index = markerLength;
     while (index < this.buffer.length && /\s/.test(this.buffer[index])) {
       index += 1;
     }

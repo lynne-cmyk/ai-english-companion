@@ -1,4 +1,13 @@
-import { app, BrowserWindow, clipboard, ipcMain, net, screen } from "electron";
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  ipcMain,
+  net,
+  screen,
+  systemPreferences,
+  type IpcMainInvokeEvent,
+} from "electron";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import {
@@ -22,6 +31,8 @@ import {
 import { SelectionActionController } from "./selection/SelectionActionController";
 import { isValidSelectionBounds } from "./selection/position";
 import type { SelectionSnapshot } from "./selection/selectionSession";
+import { PERMISSION_STATE_CHANNELS } from "./permissions/contracts";
+import { PermissionStateService } from "./permissions/permissionState";
 
 let mainWindow: BrowserWindow | null = null;
 let floatingWindow: BrowserWindow | null = null;
@@ -41,6 +52,9 @@ let floatingWindowAnchor: { x: number; y: number } | null = null;
 let globalMouseMonitorProcess: ChildProcess | null = null;
 let globalMouseMonitorOutput = "";
 let selectionActionController: SelectionActionController | null = null;
+let permissionStateService: PermissionStateService | null = null;
+let unsubscribePermissionState: (() => void) | null = null;
+let permissionActivationTimer: NodeJS.Timeout | null = null;
 let applicationIsQuitting = false;
 const isSmokeTest = process.argv.includes("--smoke-test");
 const CLIPBOARD_POLL_INTERVAL_MS = 500;
@@ -406,6 +420,9 @@ function startSelectionActionController() {
       nativeHelperContext(),
     ),
     preloadPath: path.join(__dirname, "selection/preload.js"),
+    onProbePermissionStateChange(state) {
+      permissionStateService?.acceptProbeEvidence(state);
+    },
     onAcceptedSelection(snapshot) {
       handleAcceptedSelection(snapshot);
     },
@@ -417,9 +434,93 @@ function startSelectionActionController() {
     console.log("[selection-action] Production controller started.");
   } catch (error) {
     controller.stop();
+    permissionStateService?.markHelperUnavailable("controller_start_failed");
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[selection-action] Production controller unavailable: ${message}`);
   }
+}
+
+function isMainWindowSender(event: IpcMainInvokeEvent) {
+  return (
+    mainWindow !== null &&
+    !mainWindow.isDestroyed() &&
+    event.sender === mainWindow.webContents &&
+    event.senderFrame === mainWindow.webContents.mainFrame
+  );
+}
+
+function sendPermissionStateToMainWindow() {
+  if (
+    permissionStateService === null ||
+    mainWindow === null ||
+    mainWindow.isDestroyed() ||
+    mainWindow.webContents.isDestroyed()
+  ) {
+    return;
+  }
+  mainWindow.webContents.send(
+    PERMISSION_STATE_CHANNELS.changed,
+    permissionStateService.current,
+  );
+}
+
+function startPermissionStateInfrastructure() {
+  if (permissionStateService !== null) return;
+
+  permissionStateService = new PermissionStateService({
+    checkMainAccessibility: () =>
+      process.platform === "darwin"
+        ? systemPreferences.isTrustedAccessibilityClient(false)
+        : true,
+    restartProbe: () =>
+      selectionActionController?.restartProbeForPermissionRecheck() ?? null,
+    log: (message) => console.log(message),
+  });
+  unsubscribePermissionState = permissionStateService.subscribe(() => {
+    sendPermissionStateToMainWindow();
+  });
+
+  ipcMain.handle(PERMISSION_STATE_CHANNELS.getState, (event) => {
+    if (!isMainWindowSender(event)) {
+      throw new Error("Rejected permission state sender");
+    }
+    return permissionStateService?.current;
+  });
+  ipcMain.handle(PERMISSION_STATE_CHANNELS.recheck, async (event) => {
+    if (!isMainWindowSender(event)) {
+      throw new Error("Rejected permission recheck sender");
+    }
+    if (permissionStateService === null) {
+      throw new Error("Permission state service unavailable");
+    }
+    return permissionStateService.recheck();
+  });
+
+  permissionStateService.initialize();
+}
+
+function schedulePermissionRecheck() {
+  if (permissionActivationTimer !== null || applicationIsQuitting) return;
+  permissionActivationTimer = setTimeout(() => {
+    permissionActivationTimer = null;
+    void permissionStateService?.recheck().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[permission-state] recheck failed: ${message}`);
+    });
+  }, 300);
+}
+
+function stopPermissionStateInfrastructure() {
+  if (permissionActivationTimer !== null) {
+    clearTimeout(permissionActivationTimer);
+    permissionActivationTimer = null;
+  }
+  if (permissionStateService === null) return;
+  ipcMain.removeHandler(PERMISSION_STATE_CHANNELS.getState);
+  ipcMain.removeHandler(PERMISSION_STATE_CHANNELS.recheck);
+  unsubscribePermissionState?.();
+  unsubscribePermissionState = null;
+  permissionStateService = null;
 }
 
 function moveFloatingWindowNearCursor() {
@@ -1023,6 +1124,7 @@ function createWindow() {
     height: 440,
     title: "AI English Companion — Technical Spike",
     webPreferences: {
+      preload: path.join(__dirname, "permissions/preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -1044,6 +1146,7 @@ function createWindow() {
   });
 
   mainWindow.webContents.once("did-finish-load", async () => {
+    sendPermissionStateToMainWindow();
     const visibleText = await mainWindow?.webContents.executeJavaScript(
       "document.body.innerText.trim()",
     );
@@ -1082,12 +1185,14 @@ if (!hasSingleInstanceLock) {
     console.log(
       `[app] Electron started pid=${process.pid} renderer=${POPOVER_RENDERER}`,
     );
+    startPermissionStateInfrastructure();
     startGlobalMouseMonitor();
     startSelectionActionController();
     startClipboardMonitor();
     createWindow();
 
     app.on("activate", () => {
+      schedulePermissionRecheck();
       if (mainWindow === null) {
         createWindow();
       }
@@ -1108,6 +1213,7 @@ if (!hasSingleInstanceLock) {
     globalMouseMonitorProcess = null;
     selectionActionController?.stop();
     selectionActionController = null;
+    stopPermissionStateInfrastructure();
   });
 
   app.on("window-all-closed", () => {

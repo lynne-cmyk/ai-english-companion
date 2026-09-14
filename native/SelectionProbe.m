@@ -88,6 +88,48 @@ static int RunGestureDistanceSelfTest(void) {
   return 0;
 }
 
+static NSDictionary *StartupStatus(BOOL accessibilityTrusted,
+    BOOL listenAccess, BOOL eventTapCreated, pid_t processId) {
+  return @{
+    @"type": @"probe_status",
+    @"version": @1,
+    @"ready": @YES,
+    @"accessibility": accessibilityTrusted ? @"trusted" : @"permission_required",
+    @"listen_preflight": listenAccess ? @"granted" : @"not_granted",
+    // Box an Objective-C BOOL explicitly. Boxing the raw C comparison result
+    // produces JSON 0/1, which violates the typed Node handshake contract.
+    // Keep the version-1 wire key for compatibility. This value reports only
+    // whether CGEventTapCreate produced a tap object; delivery is not proven.
+    @"event_tap_operational": eventTapCreated ? @YES : @NO,
+    @"pid": @(processId),
+  };
+}
+
+static int RunStartupStatusSelfTest(void) {
+  for (NSNumber *expected in @[ @YES, @NO ]) {
+    NSDictionary *status = StartupStatus(YES, NO, expected.boolValue, getpid());
+    NSNumber *value = status[@"event_tap_operational"];
+    if (CFGetTypeID((__bridge CFTypeRef)value) != CFBooleanGetTypeID()) {
+      fputs("[selection-probe] startup_status_self_test=failed reason=not_boolean\n",
+          stderr);
+      return 1;
+    }
+    NSData *json = [NSJSONSerialization dataWithJSONObject:status options:0 error:NULL];
+    NSDictionary *decoded = json == nil ? nil :
+        [NSJSONSerialization JSONObjectWithData:json options:0 error:NULL];
+    NSNumber *decodedValue = decoded[@"event_tap_operational"];
+    if (decodedValue == nil ||
+        CFGetTypeID((__bridge CFTypeRef)decodedValue) != CFBooleanGetTypeID() ||
+        decodedValue.boolValue != expected.boolValue) {
+      fputs("[selection-probe] startup_status_self_test=failed reason=json_round_trip\n",
+          stderr);
+      return 1;
+    }
+  }
+  puts("[selection-probe] startup_status_self_test=passed json_boolean=true");
+  return 0;
+}
+
 static uint32_t MouseUpCount(void) {
   return CGEventSourceCounterForEventType(
       kCGEventSourceStateCombinedSessionState, kCGEventLeftMouseUp);
@@ -1036,6 +1078,7 @@ int main(int argc, const char *argv[]) {
   @autoreleasepool {
     int settleDelayMs = kDefaultSettleDelayMs;
     BOOL delayProvided = NO, showHelp = NO, runGestureDistanceSelfTest = NO;
+    BOOL runStartupStatusSelfTest = NO;
     // Parse all options before reading trust/counters. The default mode is unchanged.
     for (int index = 1; index < argc; index++) {
       if (strcmp(argv[index], "--help") == 0 && !showHelp) { showHelp = YES; continue; }
@@ -1048,6 +1091,11 @@ int main(int argc, const char *argv[]) {
         runGestureDistanceSelfTest = YES;
         continue;
       }
+      if (strcmp(argv[index], "--self-test-startup-status") == 0 &&
+          !runStartupStatusSelfTest) {
+        runStartupStatusSelfTest = YES;
+        continue;
+      }
       if (strcmp(argv[index], "--delay-ms") == 0 && !delayProvided && index + 1 < argc) {
         const char *value = argv[++index];
         char *end = NULL;
@@ -1058,11 +1106,11 @@ int main(int argc, const char *argv[]) {
           continue;
         }
       }
-      fputs("Usage: selection-probe [--target-container] [--delay-ms 10..1000] [--self-test-gesture-distance] [--help]\n", stderr);
+      fputs("Usage: selection-probe [--target-container] [--delay-ms 10..1000] [--self-test-gesture-distance] [--self-test-startup-status] [--help]\n", stderr);
       return 2;
     }
     if (showHelp) {
-      puts("Usage: selection-probe [--target-container] [--delay-ms 10..1000] [--self-test-gesture-distance] [--help]\n"
+      puts("Usage: selection-probe [--target-container] [--delay-ms 10..1000] [--self-test-gesture-distance] [--self-test-startup-status] [--help]\n"
            "Default delay: 75ms; listen-only mouse gesture tap; fallback poll: 10ms.\n"
            "Drag intent threshold: 4 global macOS points; no Retina scaling.\n"
            "AX message timeout: 200ms; query budget: 800ms.\n"
@@ -1072,10 +1120,12 @@ int main(int argc, const char *argv[]) {
            "Read-only selection diagnostics on stdout; no automatic permission prompt.\n"
            "Use non-sensitive test text only. Stop with Ctrl+C.\n"
            "--self-test-gesture-distance validates maximum excursion and exits.\n"
+           "--self-test-startup-status validates the JSON Boolean contract and exits.\n"
            "--help does not start observation or query Accessibility.");
       return 0;
     }
     if (runGestureDistanceSelfTest) return RunGestureDistanceSelfTest();
+    if (runStartupStatusSelfTest) return RunStartupStatusSelfTest();
     setvbuf(stdout, NULL, _IONBF, 0);
     signal(SIGINT, HandleSignal);
     signal(SIGTERM, HandleSignal);
@@ -1105,6 +1155,20 @@ int main(int argc, const char *argv[]) {
       puts("[selection-probe] mode=target_container max_extra_depth=3 max_new_nodes=32; no broad window scan");
     printf("[selection-probe] accessibility=%s; automatic_prompt=false\n",
         AXIsProcessTrusted() ? "trusted" : "permission_required");
+    NSDictionary *startupStatus = StartupStatus(AXIsProcessTrusted(), listenAccess,
+        mouseEventTap != NULL, getpid());
+    NSError *startupStatusError = nil;
+    NSData *startupStatusData = [NSJSONSerialization dataWithJSONObject:startupStatus
+        options:0 error:&startupStatusError];
+    if (startupStatusData != nil) {
+      NSString *startupStatusJSON = [[NSString alloc] initWithData:startupStatusData
+          encoding:NSUTF8StringEncoding];
+      puts("[selection-probe] status");
+      puts(startupStatusJSON.UTF8String);
+    } else {
+      fprintf(stderr, "[selection-probe] failed to serialize startup status: %s\n",
+          startupStatusError.localizedDescription.UTF8String);
+    }
     puts("[selection-probe] Use non-sensitive text only. Selected text is printed to stdout (up to ~512 UTF-16 units). Ctrl+C to stop.");
 
     dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
