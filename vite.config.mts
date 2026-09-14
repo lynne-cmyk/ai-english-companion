@@ -17,6 +17,10 @@ export default defineConfig({
           "./selection-action.html",
           import.meta.url,
         ).pathname,
+        permissionSetup: new URL(
+          "./permission-setup.html",
+          import.meta.url,
+        ).pathname,
       },
     },
   },

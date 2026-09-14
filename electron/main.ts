@@ -3,9 +3,12 @@ import {
   BrowserWindow,
   clipboard,
   ipcMain,
+  Menu,
   net,
   screen,
+  shell,
   systemPreferences,
+  Tray,
   type IpcMainInvokeEvent,
 } from "electron";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -31,8 +34,18 @@ import {
 import { SelectionActionController } from "./selection/SelectionActionController";
 import { isValidSelectionBounds } from "./selection/position";
 import type { SelectionSnapshot } from "./selection/selectionSession";
-import { PERMISSION_STATE_CHANNELS } from "./permissions/contracts";
+import {
+  PERMISSION_STATE_CHANNELS,
+  type PermissionStateSnapshot,
+} from "./permissions/contracts";
 import { PermissionStateService } from "./permissions/permissionState";
+import { PermissionSetupWindowManager } from "./permissions/permissionSetupWindow";
+import { createMenuBarIcon } from "./permissions/menuBarIcon";
+import {
+  menuStatusLabel,
+  shouldAutoOpenPermissionSetup,
+  shouldCreateTechnicalSpikeWindow,
+} from "./permissions/setupPresentation";
 
 let mainWindow: BrowserWindow | null = null;
 let floatingWindow: BrowserWindow | null = null;
@@ -55,6 +68,13 @@ let selectionActionController: SelectionActionController | null = null;
 let permissionStateService: PermissionStateService | null = null;
 let unsubscribePermissionState: (() => void) | null = null;
 let permissionActivationTimer: NodeJS.Timeout | null = null;
+const permissionSetupWindows =
+  new PermissionSetupWindowManager<BrowserWindow>();
+let permissionSetupRendererReady = false;
+let permissionSetupShowRequested = false;
+let permissionSetupReadyHideTimer: NodeJS.Timeout | null = null;
+let inputMonitoringRestartRequired = false;
+let menuBarTray: Tray | null = null;
 let applicationIsQuitting = false;
 const isSmokeTest = process.argv.includes("--smoke-test");
 const CLIPBOARD_POLL_INTERVAL_MS = 500;
@@ -440,28 +460,221 @@ function startSelectionActionController() {
   }
 }
 
-function isMainWindowSender(event: IpcMainInvokeEvent) {
+function isPermissionSetupSender(event: IpcMainInvokeEvent) {
+  const permissionWindow = permissionSetupWindows.current;
   return (
-    mainWindow !== null &&
-    !mainWindow.isDestroyed() &&
-    event.sender === mainWindow.webContents &&
-    event.senderFrame === mainWindow.webContents.mainFrame
+    permissionWindow !== null &&
+    !permissionWindow.isDestroyed() &&
+    event.sender === permissionWindow.webContents &&
+    event.senderFrame === permissionWindow.webContents.mainFrame
   );
 }
 
-function sendPermissionStateToMainWindow() {
+function sendPermissionStateToSetupWindow() {
+  const permissionWindow = permissionSetupWindows.current;
   if (
     permissionStateService === null ||
-    mainWindow === null ||
-    mainWindow.isDestroyed() ||
-    mainWindow.webContents.isDestroyed()
+    permissionWindow === null ||
+    permissionWindow.isDestroyed() ||
+    permissionWindow.webContents.isDestroyed()
   ) {
     return;
   }
-  mainWindow.webContents.send(
+  permissionWindow.webContents.send(
     PERMISSION_STATE_CHANNELS.changed,
     permissionStateService.current,
   );
+}
+
+function clearPermissionSetupReadyHideTimer() {
+  if (permissionSetupReadyHideTimer === null) return;
+  clearTimeout(permissionSetupReadyHideTimer);
+  permissionSetupReadyHideTimer = null;
+}
+
+function schedulePermissionSetupReadyHide() {
+  clearPermissionSetupReadyHideTimer();
+  permissionSetupReadyHideTimer = setTimeout(() => {
+    permissionSetupReadyHideTimer = null;
+    permissionSetupShowRequested = false;
+    permissionSetupWindows.hide();
+    permissionSetupWindows.clearOpenContext();
+  }, 1_300);
+}
+
+function createPermissionSetupWindow() {
+  const permissionWindow = new BrowserWindow({
+    width: 416,
+    height: 372,
+    show: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    title: "AI English Companion — 权限设置",
+    backgroundColor: "#FFFFFF",
+    webPreferences: {
+      preload: path.join(__dirname, "permissions/preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  permissionSetupRendererReady = false;
+  permissionWindow.webContents.on(
+    "did-fail-load",
+    (_event, code, description) => {
+      console.error(
+        `[permission-setup] Page failed to load (${code}): ${description}`,
+      );
+    },
+  );
+  permissionWindow.webContents.on("render-process-gone", (_event, details) => {
+    console.error(`[permission-setup] Renderer stopped: ${details.reason}`);
+  });
+  permissionWindow.webContents.once("did-finish-load", () => {
+    permissionSetupRendererReady = true;
+    sendPermissionStateToSetupWindow();
+  });
+  permissionWindow.once("ready-to-show", () => {
+    if (
+      permissionSetupShowRequested &&
+      permissionSetupWindows.current === permissionWindow
+    ) {
+      permissionSetupWindows.show();
+      if (permissionSetupWindows.takeReadyAutoHideRequest()) {
+        schedulePermissionSetupReadyHide();
+      }
+    }
+  });
+  permissionWindow.on("close", (event) => {
+    if (applicationIsQuitting) return;
+    event.preventDefault();
+    permissionSetupShowRequested = false;
+    clearPermissionSetupReadyHideTimer();
+    permissionSetupWindows.hide();
+    permissionSetupWindows.clearOpenContext();
+  });
+  permissionWindow.on("closed", () => {
+    permissionSetupWindows.release(permissionWindow);
+    permissionSetupRendererReady = false;
+    permissionSetupShowRequested = false;
+  });
+
+  void permissionWindow.loadFile(
+    path.join(__dirname, "../dist/permission-setup.html"),
+  );
+  return permissionWindow;
+}
+
+function showPermissionSetupWindow(reason: "automatic" | "manual") {
+  if (reason === "manual") clearPermissionSetupReadyHideTimer();
+  permissionSetupWindows.requestOpen(reason);
+  permissionSetupShowRequested = true;
+  const permissionWindow = permissionSetupWindows.ensure(
+    createPermissionSetupWindow,
+  );
+  if (permissionSetupRendererReady) {
+    permissionSetupWindows.show();
+    sendPermissionStateToSetupWindow();
+  }
+  if (
+    permissionSetupRendererReady &&
+    permissionSetupWindows.takeReadyAutoHideRequest()
+  ) {
+    schedulePermissionSetupReadyHide();
+  }
+  return permissionWindow;
+}
+
+function updateMenuBar(status = permissionStateService?.current.status ?? "checking") {
+  if (menuBarTray === null || menuBarTray.isDestroyed()) return;
+  menuBarTray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: "AI English Companion", enabled: false },
+      { label: menuStatusLabel(status), enabled: false },
+      { type: "separator" },
+      {
+        label: "权限设置…",
+        click: () => {
+          showPermissionSetupWindow("manual");
+        },
+      },
+      { type: "separator" },
+      {
+        label: "退出 AI English Companion",
+        click: () => {
+          applicationIsQuitting = true;
+          app.quit();
+        },
+      },
+    ]),
+  );
+}
+
+function startMenuBar() {
+  if (menuBarTray !== null && !menuBarTray.isDestroyed()) return;
+  console.log("[tray] creation attempted");
+  menuBarTray = new Tray(createMenuBarIcon());
+  console.log("[tray] created and retained");
+  menuBarTray.setToolTip("AI English Companion");
+  updateMenuBar("checking");
+  console.log("[tray] context menu attached");
+}
+
+function handlePermissionStateForProductShell(state: PermissionStateSnapshot) {
+  permissionSetupWindows.observePermissionStatus(state.status);
+  updateMenuBar(
+    inputMonitoringRestartRequired ? "needs_input_monitoring" : state.status,
+  );
+  sendPermissionStateToSetupWindow();
+
+  if (state.status === "checking" || isSmokeTest) return;
+  if (inputMonitoringRestartRequired) return;
+  if (state.status === "ready") {
+    if (
+      permissionSetupRendererReady &&
+      permissionSetupWindows.current?.isVisible() &&
+      permissionSetupWindows.takeReadyAutoHideRequest()
+    ) {
+      schedulePermissionSetupReadyHide();
+    }
+    return;
+  }
+
+  clearPermissionSetupReadyHideTimer();
+  if (shouldAutoOpenPermissionSetup(state.status)) {
+    showPermissionSetupWindow("automatic");
+  }
+}
+
+const SYSTEM_SETTINGS_URLS = {
+  accessibility:
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+  inputMonitoring:
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+  privacy: "x-apple.systempreferences:com.apple.preference.security",
+} as const;
+
+async function openFixedSystemSettings(
+  target: "accessibility" | "inputMonitoring",
+) {
+  try {
+    await shell.openExternal(SYSTEM_SETTINGS_URLS[target]);
+  } catch {
+    await shell.openExternal(SYSTEM_SETTINGS_URLS.privacy);
+  }
+}
+
+function scheduleApplicationRelaunch() {
+  setImmediate(() => {
+    if (applicationIsQuitting) return;
+    applicationIsQuitting = true;
+    app.relaunch();
+    app.quit();
+  });
 }
 
 function startPermissionStateInfrastructure() {
@@ -476,18 +689,21 @@ function startPermissionStateInfrastructure() {
       selectionActionController?.restartProbeForPermissionRecheck() ?? null,
     log: (message) => console.log(message),
   });
-  unsubscribePermissionState = permissionStateService.subscribe(() => {
-    sendPermissionStateToMainWindow();
+  unsubscribePermissionState = permissionStateService.subscribe((state) => {
+    handlePermissionStateForProductShell(state);
   });
 
   ipcMain.handle(PERMISSION_STATE_CHANNELS.getState, (event) => {
-    if (!isMainWindowSender(event)) {
+    if (!isPermissionSetupSender(event)) {
       throw new Error("Rejected permission state sender");
     }
-    return permissionStateService?.current;
+    if (permissionStateService === null) {
+      throw new Error("Permission state service unavailable");
+    }
+    return permissionStateService.current;
   });
   ipcMain.handle(PERMISSION_STATE_CHANNELS.recheck, async (event) => {
-    if (!isMainWindowSender(event)) {
+    if (!isPermissionSetupSender(event)) {
       throw new Error("Rejected permission recheck sender");
     }
     if (permissionStateService === null) {
@@ -495,8 +711,40 @@ function startPermissionStateInfrastructure() {
     }
     return permissionStateService.recheck();
   });
+  ipcMain.handle(
+    PERMISSION_STATE_CHANNELS.openAccessibilitySettings,
+    async (event) => {
+      if (!isPermissionSetupSender(event)) {
+        throw new Error("Rejected Accessibility settings sender");
+      }
+      await openFixedSystemSettings("accessibility");
+    },
+  );
+  ipcMain.handle(
+    PERMISSION_STATE_CHANNELS.openInputMonitoringSettings,
+    async (event) => {
+      if (!isPermissionSetupSender(event)) {
+        throw new Error("Rejected Input Monitoring settings sender");
+      }
+      inputMonitoringRestartRequired = true;
+      updateMenuBar("needs_input_monitoring");
+      try {
+        await openFixedSystemSettings("inputMonitoring");
+      } catch (error) {
+        inputMonitoringRestartRequired = false;
+        updateMenuBar(permissionStateService?.current.status);
+        throw error;
+      }
+    },
+  );
+  ipcMain.handle(PERMISSION_STATE_CHANNELS.relaunch, (event) => {
+    if (!isPermissionSetupSender(event)) {
+      throw new Error("Rejected application relaunch sender");
+    }
+    scheduleApplicationRelaunch();
+  });
 
-  permissionStateService.initialize();
+  handlePermissionStateForProductShell(permissionStateService.initialize());
 }
 
 function schedulePermissionRecheck() {
@@ -518,6 +766,9 @@ function stopPermissionStateInfrastructure() {
   if (permissionStateService === null) return;
   ipcMain.removeHandler(PERMISSION_STATE_CHANNELS.getState);
   ipcMain.removeHandler(PERMISSION_STATE_CHANNELS.recheck);
+  ipcMain.removeHandler(PERMISSION_STATE_CHANNELS.openAccessibilitySettings);
+  ipcMain.removeHandler(PERMISSION_STATE_CHANNELS.openInputMonitoringSettings);
+  ipcMain.removeHandler(PERMISSION_STATE_CHANNELS.relaunch);
   unsubscribePermissionState?.();
   unsubscribePermissionState = null;
   permissionStateService = null;
@@ -1118,13 +1369,12 @@ function startClipboardMonitor() {
   console.log("[clipboard] Monitoring started.");
 }
 
-function createWindow() {
+function createTechnicalSpikeWindow() {
   mainWindow = new BrowserWindow({
     width: 720,
     height: 440,
     title: "AI English Companion — Technical Spike",
     webPreferences: {
-      preload: path.join(__dirname, "permissions/preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -1146,7 +1396,6 @@ function createWindow() {
   });
 
   mainWindow.webContents.once("did-finish-load", async () => {
-    sendPermissionStateToMainWindow();
     const visibleText = await mainWindow?.webContents.executeJavaScript(
       "document.body.innerText.trim()",
     );
@@ -1185,18 +1434,31 @@ if (!hasSingleInstanceLock) {
     console.log(
       `[app] Electron started pid=${process.pid} renderer=${POPOVER_RENDERER}`,
     );
+    if (process.platform === "darwin" && app.isPackaged) {
+      app.setActivationPolicy("accessory");
+    }
+    startMenuBar();
     startPermissionStateInfrastructure();
     startGlobalMouseMonitor();
     startSelectionActionController();
     startClipboardMonitor();
-    createWindow();
+    if (shouldCreateTechnicalSpikeWindow(app.isPackaged)) {
+      createTechnicalSpikeWindow();
+    }
 
     app.on("activate", () => {
       schedulePermissionRecheck();
-      if (mainWindow === null) {
-        createWindow();
+      if (
+        shouldCreateTechnicalSpikeWindow(app.isPackaged) &&
+        mainWindow === null
+      ) {
+        createTechnicalSpikeWindow();
       }
     });
+  });
+
+  app.on("before-quit", () => {
+    applicationIsQuitting = true;
   });
 
   app.on("will-quit", () => {
@@ -1213,6 +1475,9 @@ if (!hasSingleInstanceLock) {
     globalMouseMonitorProcess = null;
     selectionActionController?.stop();
     selectionActionController = null;
+    clearPermissionSetupReadyHideTimer();
+    menuBarTray?.destroy();
+    menuBarTray = null;
     stopPermissionStateInfrastructure();
   });
 

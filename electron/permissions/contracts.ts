@@ -2,6 +2,10 @@ export const PERMISSION_STATE_CHANNELS = {
   getState: "permission-state:get",
   recheck: "permission-state:recheck",
   changed: "permission-state:changed",
+  openAccessibilitySettings: "permission-state:open-accessibility-settings",
+  openInputMonitoringSettings:
+    "permission-state:open-input-monitoring-settings",
+  relaunch: "permission-state:relaunch",
 } as const;
 
 export type AccessibilityPermissionState = "unknown" | "granted" | "denied";
@@ -30,6 +34,9 @@ export interface PermissionStateSnapshot {
 export interface PermissionStateBridge {
   getState(): Promise<PermissionStateSnapshot>;
   recheck(): Promise<PermissionStateSnapshot>;
+  openAccessibilitySettings(): Promise<void>;
+  openInputMonitoringSettings(): Promise<void>;
+  relaunch(): Promise<void>;
   onStateChange(
     listener: (state: PermissionStateSnapshot) => void,
   ): () => void;

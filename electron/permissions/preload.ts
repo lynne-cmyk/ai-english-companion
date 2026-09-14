@@ -10,6 +10,10 @@ const channels = {
   getState: "permission-state:get",
   recheck: "permission-state:recheck",
   changed: "permission-state:changed",
+  openAccessibilitySettings: "permission-state:open-accessibility-settings",
+  openInputMonitoringSettings:
+    "permission-state:open-input-monitoring-settings",
+  relaunch: "permission-state:relaunch",
 } as const;
 
 const statuses = new Set([
@@ -50,6 +54,11 @@ async function invokeState(channel: string) {
 const bridge: PermissionStateBridge = {
   getState: () => invokeState(channels.getState),
   recheck: () => invokeState(channels.recheck),
+  openAccessibilitySettings: () =>
+    ipcRenderer.invoke(channels.openAccessibilitySettings),
+  openInputMonitoringSettings: () =>
+    ipcRenderer.invoke(channels.openInputMonitoringSettings),
+  relaunch: () => ipcRenderer.invoke(channels.relaunch),
   onStateChange(listener) {
     const handler = (_event: Electron.IpcRendererEvent, value: unknown) => {
       if (isPermissionState(value)) listener(value);

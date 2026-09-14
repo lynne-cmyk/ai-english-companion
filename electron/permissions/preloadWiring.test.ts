@@ -6,14 +6,14 @@ import vm from "node:vm";
 
 const repositoryRoot = path.resolve(__dirname, "../..");
 
-test("main BrowserWindow points at the isolated permission preload securely", () => {
+test("Permission Setup BrowserWindow uses the isolated preload securely", () => {
   const mainSource = readFileSync(
     path.join(repositoryRoot, "electron/main.ts"),
     "utf8",
   );
   assert.match(
     mainSource,
-    /preload:\s*path\.join\(__dirname,\s*"permissions\/preload\.js"\)/,
+    /function createPermissionSetupWindow\(\)[\s\S]*preload:\s*path\.join\(__dirname,\s*"permissions\/preload\.js"\)/,
   );
   assert.match(mainSource, /contextIsolation:\s*true/);
   assert.match(mainSource, /nodeIntegration:\s*false/);
@@ -27,8 +27,11 @@ test("packaging allowlist contains only the required permission runtime files", 
   );
   for (const artifact of [
     "dist-electron/permissions/contracts.js",
+    "dist-electron/permissions/menuBarIcon.js",
     "dist-electron/permissions/permissionState.js",
+    "dist-electron/permissions/permissionSetupWindow.js",
     "dist-electron/permissions/preload.js",
+    "dist-electron/permissions/setupPresentation.js",
   ]) {
     assert.match(builderConfig, new RegExp(`- ${artifact.replaceAll(".", "\\.")}`));
   }
@@ -54,7 +57,12 @@ test("compiled preload exposes only the narrow permissionState bridge", async ()
     ipcRenderer: {
       invoke(channel: string) {
         invocations.push(channel);
-        return Promise.resolve(state);
+        return Promise.resolve(
+          channel === "permission-state:get" ||
+            channel === "permission-state:recheck"
+            ? state
+            : undefined,
+        );
       },
       on(channel: string, listener: (...args: unknown[]) => void) {
         listeners.set(channel, listener);
@@ -80,17 +88,33 @@ test("compiled preload exposes only the narrow permissionState bridge", async ()
   const bridge = exposed.get("permissionState") as {
     getState(): Promise<unknown>;
     recheck(): Promise<unknown>;
+    openAccessibilitySettings(): Promise<void>;
+    openInputMonitoringSettings(): Promise<void>;
+    relaunch(): Promise<void>;
     onStateChange(listener: (value: unknown) => void): () => void;
   };
   assert.deepEqual(Object.keys(bridge).sort(), [
     "getState",
     "onStateChange",
+    "openAccessibilitySettings",
+    "openInputMonitoringSettings",
     "recheck",
+    "relaunch",
   ]);
   assert.equal("ipcRenderer" in bridge, false);
+  assert.equal("openExternal" in bridge, false);
   assert.deepEqual(await bridge.getState(), state);
   assert.deepEqual(await bridge.recheck(), state);
-  assert.deepEqual(invocations, ["permission-state:get", "permission-state:recheck"]);
+  await bridge.openAccessibilitySettings();
+  await bridge.openInputMonitoringSettings();
+  await bridge.relaunch();
+  assert.deepEqual(invocations, [
+    "permission-state:get",
+    "permission-state:recheck",
+    "permission-state:open-accessibility-settings",
+    "permission-state:open-input-monitoring-settings",
+    "permission-state:relaunch",
+  ]);
 
   let changedState: unknown = null;
   const unsubscribe = bridge.onStateChange((value) => {
@@ -100,6 +124,76 @@ test("compiled preload exposes only the narrow permissionState bridge", async ()
   assert.deepEqual(changedState, state);
   unsubscribe();
   assert.equal(listeners.has("permission-state:changed"), false);
+});
+
+test("settings and relaunch IPC remain fixed, narrow main-process actions", () => {
+  const mainSource = readFileSync(
+    path.join(repositoryRoot, "electron/main.ts"),
+    "utf8",
+  );
+  assert.match(mainSource, /Privacy_Accessibility/);
+  assert.match(mainSource, /Privacy_ListenEvent/);
+  assert.match(mainSource, /app\.relaunch\(\)/);
+  assert.doesNotMatch(
+    readFileSync(path.join(repositoryRoot, "electron/permissions/preload.ts"), "utf8"),
+    /openExternal|shell\.|child_process|exposeInMainWorld\([^,]+,\s*ipcRenderer/,
+  );
+});
+
+test("packaged startup is menu-bar-first and Technical Spike stays development-only", () => {
+  const mainSource = readFileSync(
+    path.join(repositoryRoot, "electron/main.ts"),
+    "utf8",
+  );
+  assert.match(mainSource, /new Tray\(createMenuBarIcon\(\)\)/);
+  assert.match(mainSource, /let menuBarTray: Tray \| null = null/);
+  assert.match(mainSource, /menuBarTray = new Tray\(createMenuBarIcon\(\)\)/);
+  assert.match(mainSource, /menuBarTray\?\.destroy\(\)/);
+  assert.match(mainSource, /app\.setActivationPolicy\("accessory"\)/);
+  assert.match(
+    mainSource,
+    /if \(shouldCreateTechnicalSpikeWindow\(app\.isPackaged\)\)/,
+  );
+});
+
+test("menu bar keeps the expected fixed product actions", () => {
+  const mainSource = readFileSync(
+    path.join(repositoryRoot, "electron/main.ts"),
+    "utf8",
+  );
+  assert.match(mainSource, /label: "AI English Companion", enabled: false/);
+  assert.match(mainSource, /label: "权限设置…"/);
+  assert.match(mainSource, /label: "退出 AI English Companion"/);
+  assert.match(mainSource, /\[tray\] creation attempted/);
+  assert.match(mainSource, /\[tray\] context menu attached/);
+});
+
+test("closing Permission Setup hides it without quitting the menu-bar app", () => {
+  const mainSource = readFileSync(
+    path.join(repositoryRoot, "electron/main.ts"),
+    "utf8",
+  );
+  const closeHandler = mainSource.match(
+    /permissionWindow\.on\("close",[\s\S]*?\n  \}\);/,
+  )?.[0];
+  assert.ok(closeHandler);
+  assert.match(closeHandler, /event\.preventDefault\(\)/);
+  assert.match(closeHandler, /permissionSetupWindows\.hide\(\)/);
+  assert.doesNotMatch(closeHandler, /app\.quit/);
+});
+
+test("menu and automatic permission setup opens carry explicit lifecycle reasons", () => {
+  const mainSource = readFileSync(
+    path.join(repositoryRoot, "electron/main.ts"),
+    "utf8",
+  );
+  assert.match(mainSource, /showPermissionSetupWindow\("manual"\)/);
+  assert.match(mainSource, /showPermissionSetupWindow\("automatic"\)/);
+  assert.doesNotMatch(mainSource, /showPermissionSetupWindow\(\)/);
+  assert.match(
+    mainSource,
+    /permissionSetupWindows\.takeReadyAutoHideRequest\(\)/,
+  );
 });
 
 test("existing popover and selection-action preload surfaces remain present", () => {
