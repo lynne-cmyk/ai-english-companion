@@ -15,6 +15,7 @@ files:
   - dist-electron/main.js
   - dist-electron/aiRecovery.js
   - dist-electron/explanation/**/*
+  - dist-electron/loginItems/loginItemService.js
   - dist-electron/nativeHelperPaths.js
   - dist-electron/permissions/contracts.js
   - dist-electron/permissions/menuBarIcon.js

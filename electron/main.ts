@@ -31,6 +31,13 @@ import {
   resolveNativeHelperPath,
   resolveNativeHelperWorkingDirectory,
 } from "./nativeHelperPaths";
+import {
+  LoginItemService,
+  applyLoginItemStateToMenu,
+  loginItemMenuPresentation,
+  refreshLoginItemMenu as refreshLoginItemMenuState,
+  type LoginItemState,
+} from "./loginItems/loginItemService";
 import { SelectionActionController } from "./selection/SelectionActionController";
 import { isValidSelectionBounds } from "./selection/position";
 import type { SelectionSnapshot } from "./selection/selectionSession";
@@ -91,6 +98,7 @@ let permissionSetupShowRequested = false;
 let permissionSetupReadyHideTimer: NodeJS.Timeout | null = null;
 let inputMonitoringRestartRequired = false;
 let menuBarTray: Tray | null = null;
+let loginItemService: LoginItemService | null = null;
 let apiKeyStore: SecretStore | null = null;
 let explanationService: ExplanationService | null = null;
 let apiKeySetupRendererReady = false;
@@ -756,35 +764,94 @@ function stopApiKeySetupInfrastructure() {
   apiKeyStore = null;
 }
 
-function updateMenuBar(status = permissionStateService?.current.status ?? "checking") {
+const LOGIN_ITEM_TOGGLE_ID = "login-item-toggle";
+const LOGIN_ITEM_APPROVAL_ID = "login-item-approval-guidance";
+
+function loginItemMenuBindings(menu: Menu) {
+  const toggle = menu.getMenuItemById(LOGIN_ITEM_TOGGLE_ID);
+  const approvalGuidance = menu.getMenuItemById(LOGIN_ITEM_APPROVAL_ID);
+  if (toggle === null || approvalGuidance === null) return null;
+  return { toggle, approvalGuidance };
+}
+
+function refreshLoginItemMenuFromSystem(menu: Menu) {
+  const bindings = loginItemMenuBindings(menu);
+  if (loginItemService === null || bindings === null) return "unavailable";
+  return refreshLoginItemMenuState(loginItemService, bindings);
+}
+
+function toggleLoginItem(menu: Menu) {
+  const bindings = loginItemMenuBindings(menu);
+  if (loginItemService === null || bindings === null) return;
+  const currentState = loginItemService.getState();
+  const nextState = loginItemService.setEnabled(currentState !== "enabled");
+  applyLoginItemStateToMenu(nextState, bindings);
+}
+
+function startLoginItemInfrastructure() {
+  if (loginItemService !== null) return;
+  loginItemService = new LoginItemService({
+    isPackaged: app.isPackaged,
+    api: {
+      getLoginItemSettings: (options) => app.getLoginItemSettings(options),
+      setLoginItemSettings: (settings) => app.setLoginItemSettings(settings),
+    },
+    log: (message) => console.error(message),
+  });
+}
+
+function updateMenuBar(
+  status = permissionStateService?.current.status ?? "checking",
+) {
   if (menuBarTray === null || menuBarTray.isDestroyed()) return;
-  menuBarTray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: "AI English Companion", enabled: false },
-      { label: menuStatusLabel(status), enabled: false },
-      { type: "separator" },
-      {
-        label: "权限设置…",
-        click: () => {
-          showPermissionSetupWindow("manual");
-        },
+  const loginItemState: LoginItemState =
+    loginItemService?.getState() ?? "unavailable";
+  const loginItemPresentation = loginItemMenuPresentation(loginItemState);
+  let contextMenu: Menu;
+  contextMenu = Menu.buildFromTemplate([
+    { label: "AI English Companion", enabled: false },
+    { label: menuStatusLabel(status), enabled: false },
+    { type: "separator" },
+    {
+      label: "权限设置…",
+      click: () => {
+        showPermissionSetupWindow("manual");
       },
-      {
-        label: "AI 服务设置…",
-        click: () => {
-          showApiKeySetupWindow();
-        },
+    },
+    {
+      label: "AI 服务设置…",
+      click: () => {
+        showApiKeySetupWindow();
       },
-      { type: "separator" },
-      {
-        label: "退出 AI English Companion",
-        click: () => {
-          applicationIsQuitting = true;
-          app.quit();
-        },
+    },
+    {
+      id: LOGIN_ITEM_TOGGLE_ID,
+      label: "登录时启动",
+      type: "checkbox",
+      checked: loginItemPresentation.checked,
+      click: () => {
+        toggleLoginItem(contextMenu);
       },
-    ]),
-  );
+    },
+    {
+      id: LOGIN_ITEM_APPROVAL_ID,
+      label: "需要在“系统设置 → 登录项”中允许",
+      enabled: false,
+      visible: loginItemPresentation.showApprovalGuidance,
+    },
+    { type: "separator" },
+    {
+      label: "退出 AI English Companion",
+      click: () => {
+        applicationIsQuitting = true;
+        app.quit();
+      },
+    },
+  ]);
+  contextMenu.on("menu-will-show", () => {
+    refreshLoginItemMenuFromSystem(contextMenu);
+  });
+  menuBarTray.setContextMenu(contextMenu);
 }
 
 function startMenuBar() {
@@ -1571,6 +1638,7 @@ if (!hasSingleInstanceLock) {
       app.setActivationPolicy("accessory");
     }
     startApiKeySetupInfrastructure();
+    startLoginItemInfrastructure();
     startMenuBar();
     startPermissionStateInfrastructure();
     startGlobalMouseMonitor();
@@ -1611,6 +1679,7 @@ if (!hasSingleInstanceLock) {
     selectionActionController = null;
     clearPermissionSetupReadyHideTimer();
     stopApiKeySetupInfrastructure();
+    loginItemService = null;
     menuBarTray?.destroy();
     menuBarTray = null;
     stopPermissionStateInfrastructure();
