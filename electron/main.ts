@@ -5,6 +5,7 @@ import {
   ipcMain,
   Menu,
   net,
+  safeStorage,
   screen,
   shell,
   systemPreferences,
@@ -45,6 +46,21 @@ import {
   shouldAutoOpenPermissionSetup,
   shouldCreateTechnicalSpikeWindow,
 } from "./permissions/setupPresentation";
+import {
+  API_KEY_SETUP_CHANNELS,
+  type ApiKeySetupErrorCode,
+  type ApiKeySetupResult,
+  type ApiKeySetupState,
+} from "./secrets/contracts";
+import { ApiKeySetupWindowManager } from "./secrets/apiKeySetupWindow";
+import {
+  createDeepSeekSecretStore,
+  type SafeStorageLike,
+} from "./secrets/safeStorageCipher";
+import {
+  SecretStoreError,
+  type SecretStore,
+} from "./secrets/secretStore";
 
 let mainWindow: BrowserWindow | null = null;
 let floatingWindow: BrowserWindow | null = null;
@@ -69,11 +85,15 @@ let unsubscribePermissionState: (() => void) | null = null;
 let permissionActivationTimer: NodeJS.Timeout | null = null;
 const permissionSetupWindows =
   new PermissionSetupWindowManager<BrowserWindow>();
+const apiKeySetupWindows = new ApiKeySetupWindowManager<BrowserWindow>();
 let permissionSetupRendererReady = false;
 let permissionSetupShowRequested = false;
 let permissionSetupReadyHideTimer: NodeJS.Timeout | null = null;
 let inputMonitoringRestartRequired = false;
 let menuBarTray: Tray | null = null;
+let apiKeyStore: SecretStore | null = null;
+let apiKeySetupRendererReady = false;
+let apiKeySetupShowRequested = false;
 let applicationIsQuitting = false;
 const isSmokeTest = process.argv.includes("--smoke-test");
 const CLIPBOARD_POLL_INTERVAL_MS = 500;
@@ -545,6 +565,196 @@ function showPermissionSetupWindow(reason: "automatic" | "manual") {
   return permissionWindow;
 }
 
+function isApiKeySetupSender(event: IpcMainInvokeEvent) {
+  const setupWindow = apiKeySetupWindows.current;
+  return (
+    setupWindow !== null &&
+    !setupWindow.isDestroyed() &&
+    event.sender === setupWindow.webContents &&
+    event.senderFrame === setupWindow.webContents.mainFrame
+  );
+}
+
+function publicApiKeyError(error: unknown): ApiKeySetupErrorCode {
+  if (!(error instanceof SecretStoreError)) return "storage_unavailable";
+  switch (error.code) {
+    case "INVALID_API_KEY":
+      return "invalid_api_key";
+    case "ENCRYPTION_UNAVAILABLE":
+    case "ENCRYPTION_FAILED":
+      return "encryption_unavailable";
+    case "CORRUPTED_SECRET":
+    case "DECRYPTION_FAILED":
+      return "stored_key_unreadable";
+    case "STORAGE_READ_FAILED":
+    case "STORAGE_WRITE_FAILED":
+    case "STORAGE_DELETE_FAILED":
+      return "storage_unavailable";
+  }
+}
+
+function apiKeyFailure(
+  operation: "read" | "save" | "delete",
+  error: unknown,
+): ApiKeySetupState {
+  const errorCode = publicApiKeyError(error);
+  console.error(`[api-key-setup] ${operation} failed category=${errorCode}`);
+  return { status: "error", configured: false, error: errorCode };
+}
+
+async function readApiKeySetupState(): Promise<ApiKeySetupState> {
+  if (apiKeyStore === null) {
+    return {
+      status: "error",
+      configured: false,
+      error: "storage_unavailable",
+    };
+  }
+  try {
+    return { status: "ready", configured: await apiKeyStore.isConfigured() };
+  } catch (error) {
+    return apiKeyFailure("read", error);
+  }
+}
+
+function createApiKeySetupWindow() {
+  const setupWindow = new BrowserWindow({
+    width: 416,
+    height: 300,
+    show: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    title: "AI English Companion — AI 服务设置",
+    backgroundColor: "#FFFFFF",
+    webPreferences: {
+      preload: path.join(__dirname, "secrets/preload.js"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+
+  apiKeySetupRendererReady = false;
+  setupWindow.webContents.on("did-fail-load", (_event, code, description) => {
+    console.error(
+      `[api-key-setup] Page failed to load (${code}): ${description}`,
+    );
+  });
+  setupWindow.webContents.on("render-process-gone", (_event, details) => {
+    console.error(`[api-key-setup] Renderer stopped: ${details.reason}`);
+  });
+  setupWindow.webContents.once("did-finish-load", () => {
+    apiKeySetupRendererReady = true;
+  });
+  setupWindow.once("ready-to-show", () => {
+    if (
+      apiKeySetupShowRequested &&
+      apiKeySetupWindows.current === setupWindow
+    ) {
+      apiKeySetupWindows.show();
+    }
+  });
+  setupWindow.on("close", (event) => {
+    if (applicationIsQuitting) return;
+    event.preventDefault();
+    apiKeySetupShowRequested = false;
+    apiKeySetupWindows.hide();
+  });
+  setupWindow.on("closed", () => {
+    apiKeySetupWindows.release(setupWindow);
+    apiKeySetupRendererReady = false;
+    apiKeySetupShowRequested = false;
+  });
+
+  void setupWindow.loadFile(
+    path.join(__dirname, "../dist/api-key-setup.html"),
+  );
+  return setupWindow;
+}
+
+function showApiKeySetupWindow() {
+  apiKeySetupShowRequested = true;
+  const setupWindow = apiKeySetupWindows.ensure(createApiKeySetupWindow);
+  if (apiKeySetupRendererReady) apiKeySetupWindows.show();
+  return setupWindow;
+}
+
+function startApiKeySetupInfrastructure() {
+  if (apiKeyStore !== null) return;
+  apiKeyStore = createDeepSeekSecretStore(
+    app.getPath("userData"),
+    safeStorage as SafeStorageLike,
+  );
+
+  ipcMain.handle(API_KEY_SETUP_CHANNELS.getState, async (event) => {
+    if (!isApiKeySetupSender(event)) {
+      throw new Error("Rejected API Key setup sender");
+    }
+    return readApiKeySetupState();
+  });
+  ipcMain.handle(
+    API_KEY_SETUP_CHANNELS.setApiKey,
+    async (event, apiKey: unknown): Promise<ApiKeySetupResult> => {
+      if (!isApiKeySetupSender(event)) {
+        throw new Error("Rejected API Key setup sender");
+      }
+      if (apiKeyStore === null || typeof apiKey !== "string") {
+        return {
+          ok: false,
+          state: {
+            status: "error",
+            configured: false,
+            error: typeof apiKey === "string"
+              ? "storage_unavailable"
+              : "invalid_api_key",
+          },
+        };
+      }
+      try {
+        await apiKeyStore.setApiKey(apiKey);
+        return { ok: true, state: { status: "ready", configured: true } };
+      } catch (error) {
+        return { ok: false, state: apiKeyFailure("save", error) };
+      }
+    },
+  );
+  ipcMain.handle(
+    API_KEY_SETUP_CHANNELS.deleteApiKey,
+    async (event): Promise<ApiKeySetupResult> => {
+      if (!isApiKeySetupSender(event)) {
+        throw new Error("Rejected API Key setup sender");
+      }
+      if (apiKeyStore === null) {
+        return {
+          ok: false,
+          state: {
+            status: "error",
+            configured: false,
+            error: "storage_unavailable",
+          },
+        };
+      }
+      try {
+        await apiKeyStore.deleteApiKey();
+        return { ok: true, state: { status: "ready", configured: false } };
+      } catch (error) {
+        return { ok: false, state: apiKeyFailure("delete", error) };
+      }
+    },
+  );
+}
+
+function stopApiKeySetupInfrastructure() {
+  if (apiKeyStore === null) return;
+  ipcMain.removeHandler(API_KEY_SETUP_CHANNELS.getState);
+  ipcMain.removeHandler(API_KEY_SETUP_CHANNELS.setApiKey);
+  ipcMain.removeHandler(API_KEY_SETUP_CHANNELS.deleteApiKey);
+  apiKeyStore = null;
+}
+
 function updateMenuBar(status = permissionStateService?.current.status ?? "checking") {
   if (menuBarTray === null || menuBarTray.isDestroyed()) return;
   menuBarTray.setContextMenu(
@@ -556,6 +766,12 @@ function updateMenuBar(status = permissionStateService?.current.status ?? "check
         label: "权限设置…",
         click: () => {
           showPermissionSetupWindow("manual");
+        },
+      },
+      {
+        label: "AI 服务设置…",
+        click: () => {
+          showApiKeySetupWindow();
         },
       },
       { type: "separator" },
@@ -1349,6 +1565,7 @@ if (!hasSingleInstanceLock) {
     if (process.platform === "darwin" && app.isPackaged) {
       app.setActivationPolicy("accessory");
     }
+    startApiKeySetupInfrastructure();
     startMenuBar();
     startPermissionStateInfrastructure();
     startGlobalMouseMonitor();
@@ -1388,6 +1605,7 @@ if (!hasSingleInstanceLock) {
     selectionActionController?.stop();
     selectionActionController = null;
     clearPermissionSetupReadyHideTimer();
+    stopApiKeySetupInfrastructure();
     menuBarTray?.destroy();
     menuBarTray = null;
     stopPermissionStateInfrastructure();

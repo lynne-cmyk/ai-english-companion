@@ -21,6 +21,10 @@ export default defineConfig({
           "./permission-setup.html",
           import.meta.url,
         ).pathname,
+        apiKeySetup: new URL(
+          "./api-key-setup.html",
+          import.meta.url,
+        ).pathname,
       },
     },
   },

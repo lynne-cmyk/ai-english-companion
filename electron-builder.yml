@@ -7,6 +7,7 @@ directories:
 
 files:
   - dist/index.html
+  - dist/api-key-setup.html
   - dist/permission-setup.html
   - dist/popover-window.html
   - dist/selection-action.html
@@ -24,6 +25,11 @@ files:
   - dist-electron/popoverIpc.js
   - dist-electron/preload.js
   - dist-electron/selection/**/*
+  - dist-electron/secrets/apiKeySetupWindow.js
+  - dist-electron/secrets/contracts.js
+  - dist-electron/secrets/preload.js
+  - dist-electron/secrets/safeStorageCipher.js
+  - dist-electron/secrets/secretStore.js
   - package.json
   - "!node_modules/**/*"
   - "!**/*.test.js"
