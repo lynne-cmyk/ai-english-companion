@@ -53,6 +53,7 @@ export function TranslatorPopover({
         {model.state === "error" && (
           <StatusView
             kind="error"
+            failureCode={model.failureCode}
             retryDisabled={retryDisabled}
             onRetry={onRetry}
           />

@@ -43,6 +43,9 @@ function toViewModel(payload: PopoverStatePayload): PopoverViewModel {
   return {
     state: payload.status,
     word: payload.word,
+    ...(payload.status === "error"
+      ? { failureCode: payload.failure.code }
+      : {}),
   };
 }
 

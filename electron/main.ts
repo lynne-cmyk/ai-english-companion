@@ -20,7 +20,7 @@ import {
   type RequestSnapshot,
 } from "./aiRecovery";
 import type { ExplanationService } from "./explanation/contracts";
-import { HttpExplanationService } from "./explanation/httpExplanationService";
+import { DirectProviderExplanationService } from "./explanation/directProviderExplanationService";
 import {
   POPOVER_IPC_CHANNELS,
   type ExplanationResult,
@@ -92,6 +92,7 @@ let permissionSetupReadyHideTimer: NodeJS.Timeout | null = null;
 let inputMonitoringRestartRequired = false;
 let menuBarTray: Tray | null = null;
 let apiKeyStore: SecretStore | null = null;
+let explanationService: ExplanationService | null = null;
 let apiKeySetupRendererReady = false;
 let apiKeySetupShowRequested = false;
 let applicationIsQuitting = false;
@@ -121,10 +122,6 @@ function nativeHelperPath(
 ) {
   return resolveNativeHelperPath(helper, nativeHelperContext());
 }
-
-const explanationService: ExplanationService = new HttpExplanationService({
-  fetchImplementation: fetch,
-});
 
 type FloatingWindowState =
   | {
@@ -688,6 +685,9 @@ function startApiKeySetupInfrastructure() {
     app.getPath("userData"),
     safeStorage as SafeStorageLike,
   );
+  explanationService = new DirectProviderExplanationService({
+    secretStore: apiKeyStore,
+  });
 
   ipcMain.handle(API_KEY_SETUP_CHANNELS.getState, async (event) => {
     if (!isApiKeySetupSender(event)) {
@@ -752,6 +752,7 @@ function stopApiKeySetupInfrastructure() {
   ipcMain.removeHandler(API_KEY_SETUP_CHANNELS.getState);
   ipcMain.removeHandler(API_KEY_SETUP_CHANNELS.setApiKey);
   ipcMain.removeHandler(API_KEY_SETUP_CHANNELS.deleteApiKey);
+  explanationService = null;
   apiKeyStore = null;
 }
 
@@ -1407,7 +1408,11 @@ async function executeAIRequest(snapshot: RequestSnapshot, requestId: number) {
     let result: ExplanationResult;
 
     try {
-      result = await explanationService.generateExplanation(
+      const service = explanationService;
+      if (service === null) {
+        throw new Error("Explanation service is not initialized");
+      }
+      result = await service.generateExplanation(
         snapshot,
         { signal: requestController.signal },
       );

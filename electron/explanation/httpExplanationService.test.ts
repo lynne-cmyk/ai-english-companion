@@ -29,7 +29,7 @@ const explanation = {
 
 const repositoryRoot = path.resolve(__dirname, "../..");
 
-test("Electron request lifecycle uses the service boundary and packages its runtime", () => {
+test("Electron request lifecycle uses the Direct service boundary and packages its runtime", () => {
   const mainSource = readFileSync(
     path.join(repositoryRoot, "electron/main.ts"),
     "utf8",
@@ -39,7 +39,9 @@ test("Electron request lifecycle uses the service boundary and packages its runt
     "utf8",
   );
 
-  assert.match(mainSource, /explanationService\.generateExplanation\(/);
+  assert.match(mainSource, /service\.generateExplanation\(/);
+  assert.match(mainSource, /new DirectProviderExplanationService/);
+  assert.doesNotMatch(mainSource, /new HttpExplanationService/);
   assert.doesNotMatch(mainSource, /127\.0\.0\.1:3001\/ai\/explain/);
   assert.doesNotMatch(mainSource, /function requestAIExplanation\(/);
   assert.match(builderConfig, /- dist-electron\/explanation\/\*\*\/\*/);

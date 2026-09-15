@@ -44,6 +44,7 @@ The JSON schema is:
 All values must be strings. Preserve the input word in the word field. Do not invent information. Empty strings are permitted only for fields other than translation when their values cannot be determined reliably.`;
 
 interface DeepSeekProviderOptions {
+  apiKey?: string;
   environment?: NodeJS.ProcessEnv;
   fetchImplementation?: typeof fetch;
   timeoutMs?: number;
@@ -204,11 +205,15 @@ function isAbortError(error: unknown): boolean {
 export class DeepSeekAIProvider implements AIProvider {
   readonly name = "deepseek";
 
+  private readonly explicitApiKey: string | undefined;
+  private readonly hasExplicitApiKey: boolean;
   private readonly environment: NodeJS.ProcessEnv;
   private readonly fetchImplementation: typeof fetch;
   private readonly timeoutMs: number;
 
   constructor(options: DeepSeekProviderOptions = {}) {
+    this.hasExplicitApiKey = Object.hasOwn(options, "apiKey");
+    this.explicitApiKey = options.apiKey?.trim();
     this.environment = options.environment ?? process.env;
     this.fetchImplementation = options.fetchImplementation ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -216,8 +221,11 @@ export class DeepSeekAIProvider implements AIProvider {
 
   async generateExplanation(
     input: GenerateExplanationInput,
+    options: { signal?: AbortSignal } = {},
   ): Promise<ExplanationResult> {
-    const apiKey = this.environment.DEEPSEEK_API_KEY?.trim();
+    const apiKey = this.hasExplicitApiKey
+      ? this.explicitApiKey
+      : this.environment.DEEPSEEK_API_KEY?.trim();
 
     if (!apiKey) {
       throw new AIProviderError(
@@ -226,8 +234,20 @@ export class DeepSeekAIProvider implements AIProvider {
       );
     }
 
+    if (options.signal?.aborted) {
+      throw options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new DOMException("The request was aborted", "AbortError");
+    }
+
     const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), this.timeoutMs);
+    let providerTimedOut = false;
+    const forwardCallerAbort = () => abortController.abort(options.signal?.reason);
+    options.signal?.addEventListener("abort", forwardCallerAbort, { once: true });
+    const timeout = setTimeout(() => {
+      providerTimedOut = true;
+      abortController.abort();
+    }, this.timeoutMs);
 
     try {
       const response = await this.fetchImplementation(DEEPSEEK_API_URL, {
@@ -251,17 +271,7 @@ export class DeepSeekAIProvider implements AIProvider {
       });
 
       if (!response.ok) {
-        let errorBody = "<unable to read error body>";
-
-        try {
-          errorBody = (await response.text()) || "<empty error body>";
-        } catch {
-          // Keep the original HTTP_ERROR behavior if the debug body cannot be read.
-        }
-
-        const safeErrorBody = errorBody.split(apiKey).join("[REDACTED]");
         console.error(`[deepseek] HTTP status: ${response.status}`);
-        console.error(`[deepseek] Error body: ${safeErrorBody}`);
 
         throw new AIProviderError(
           "HTTP_ERROR",
@@ -295,13 +305,21 @@ export class DeepSeekAIProvider implements AIProvider {
         throw error;
       }
 
-      if (abortController.signal.aborted || isAbortError(error)) {
+      if (providerTimedOut) {
         throw new AIProviderError(
           "TIMEOUT",
           `DeepSeek request timed out after ${this.timeoutMs}ms`,
           { cause: error },
         );
       }
+
+      if (options.signal?.aborted) {
+        throw options.signal.reason instanceof Error
+          ? options.signal.reason
+          : new DOMException("The request was aborted", "AbortError");
+      }
+
+      if (abortController.signal.aborted || isAbortError(error)) throw error;
 
       throw new AIProviderError(
         "NETWORK_ERROR",
@@ -310,6 +328,7 @@ export class DeepSeekAIProvider implements AIProvider {
       );
     } finally {
       clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", forwardCallerAbort);
     }
   }
 }

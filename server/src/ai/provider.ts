@@ -8,6 +8,7 @@ export interface AIProvider {
 
   generateExplanation(
     input: GenerateExplanationInput,
+    options?: { signal?: AbortSignal },
   ): Promise<ExplanationResult>;
 }
 

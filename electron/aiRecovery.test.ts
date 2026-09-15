@@ -4,6 +4,26 @@ import {
   BackendHttpError, BackendTransportError, InvalidExplanationError,
   classifyFailure, readBackendFailure,
 } from "./aiRecovery";
+import { DirectExplanationError } from "./explanation/errors";
+
+test("Direct Provider failures retain safe classification and retryability", () => {
+  const cases = [
+    [new DirectExplanationError("API_KEY_MISSING"), "API_KEY_MISSING", false, "error"],
+    [new DirectExplanationError("API_KEY_UNREADABLE"), "API_KEY_UNREADABLE", false, "error"],
+    [new DirectExplanationError("PROVIDER_TIMEOUT"), "PROVIDER_TIMEOUT", true, "error"],
+    [new DirectExplanationError("PROVIDER_NETWORK_ERROR"), "PROVIDER_NETWORK_ERROR", true, "offline"],
+    [new DirectExplanationError("UPSTREAM_HTTP_ERROR", { upstreamStatus: 401 }), "UPSTREAM_HTTP_ERROR", false, "error"],
+    [new DirectExplanationError("UPSTREAM_HTTP_ERROR", { upstreamStatus: 429 }), "UPSTREAM_HTTP_ERROR", true, "error"],
+    [new DirectExplanationError("UPSTREAM_HTTP_ERROR", { upstreamStatus: 503 }), "UPSTREAM_HTTP_ERROR", true, "error"],
+    [new DirectExplanationError("INVALID_RESPONSE"), "INVALID_RESPONSE", true, "error"],
+  ] as const;
+  for (const [error, code, retryable, status] of cases) {
+    assert.deepEqual(classifyFailure(error, false, false), {
+      status,
+      failure: { code, retryable },
+    });
+  }
+});
 
 test("structured Provider failures retain classification and safe retryability", () => {
   const cases = [

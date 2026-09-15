@@ -1,32 +1,30 @@
 import { InvalidExplanationError } from "../aiRecovery";
 import type { ExplanationResult } from "./contracts";
 
-const PART_OF_SPEECH_LABELS = new Set([
-  "NOUN",
-  "VERB",
-  "ADJ",
-  "ADV",
-  "PREP",
-  "PRON",
-  "CONJ",
-  "DET",
-  "ART",
-  "INTJ",
-  "AUX",
-  "MODAL",
-  "NUM",
-  "PART",
-]);
+const PART_OF_SPEECH_ALIASES: Readonly<Record<string, string>> = {
+  N: "NOUN", NOUN: "NOUN",
+  V: "VERB", VERB: "VERB",
+  ADJ: "ADJ", ADJECTIVE: "ADJ",
+  ADV: "ADV", ADVERB: "ADV",
+  PREP: "PREP", PREPOSITION: "PREP",
+  PRON: "PRON", PRONOUN: "PRON",
+  CONJ: "CONJ", CONJUNCTION: "CONJ",
+  DET: "DET", DETERMINER: "DET",
+  ART: "ART", ARTICLE: "ART",
+  INTJ: "INTJ", INTERJECTION: "INTJ",
+  AUX: "AUX", AUXILIARY: "AUX",
+  MODAL: "MODAL",
+  NUM: "NUM", NUMBER: "NUM", NUMERAL: "NUM",
+  PART: "PART", PARTICLE: "PART",
+};
 
 function normalizePartOfSpeech(value: unknown): string | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
 
-  const normalizedValue = value.trim().toUpperCase();
-  return PART_OF_SPEECH_LABELS.has(normalizedValue)
-    ? normalizedValue
-    : undefined;
+  const normalizedValue = value.trim().toUpperCase().replace(/\.$/, "");
+  return PART_OF_SPEECH_ALIASES[normalizedValue];
 }
 
 function isExplanationResult(value: unknown): value is ExplanationResult {
@@ -51,7 +49,12 @@ export function parseExplanationResult(
   value: unknown,
   expectedWord: string,
 ): ExplanationResult {
-  if (!isExplanationResult(value) || value.word !== expectedWord) {
+  if (
+    !isExplanationResult(value) ||
+    value.word !== expectedWord ||
+    value.translation.trim() === "" ||
+    !/\p{Script=Han}/u.test(value.translation)
+  ) {
     throw new InvalidExplanationError();
   }
 

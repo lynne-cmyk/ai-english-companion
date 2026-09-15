@@ -7,7 +7,8 @@
   "scripts": {
     "dev:popover": "vite --host 127.0.0.1 --port 4173 --strictPort",
     "build:renderer": "vite build",
-    "build:main": "tsc -p tsconfig.main.json",
+    "build:provider": "tsc -p tsconfig.provider.json",
+    "build:main": "npm run build:provider && tsc -p tsconfig.main.json",
     "test:native-helper-paths": "npm run build:main && node --test dist-electron/nativeHelperPaths.test.js",
     "test:permissions": "npm run build:main && node --test dist-electron/permissions/*.test.js",
     "test:recovery": "npm run build:main && node --test dist-electron/aiRecovery.test.js dist-electron/recoveryLifecycle.test.js",

@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "outDir": "dist-provider",
+    "rootDir": "server/src/ai",
+    "declaration": true,
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": [
+    "server/src/ai/deepSeekProvider.ts",
+    "server/src/ai/provider.ts",
+    "server/src/ai/types.ts"
+  ]
+}

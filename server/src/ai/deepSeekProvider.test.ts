@@ -78,6 +78,41 @@ test("DeepSeekAIProvider builds the expected request and validates the result", 
   assert.deepEqual(JSON.parse(requestBody.messages[1]?.content ?? ""), input);
 });
 
+test("DeepSeekAIProvider prefers an explicitly injected key over environment configuration", async () => {
+  let authorization = "";
+  const provider = new DeepSeekAIProvider({
+    apiKey: "explicit-test-key",
+    environment: { DEEPSEEK_API_KEY: "environment-test-key" },
+    fetchImplementation: async (_url, init) => {
+      authorization = new Headers(init?.headers).get("Authorization") ?? "";
+      return chatCompletionResponse(JSON.stringify(explanation));
+    },
+  });
+
+  await provider.generateExplanation(input);
+  assert.equal(authorization, "Bearer explicit-test-key");
+});
+
+test("DeepSeekAIProvider propagates an external AbortSignal", async () => {
+  const controller = new AbortController();
+  const provider = new DeepSeekAIProvider({
+    apiKey: "explicit-test-key",
+    fetchImplementation: ((_url: unknown, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const error = new Error("Aborted");
+          error.name = "AbortError";
+          reject(error);
+        }, { once: true });
+      })) as typeof fetch,
+  });
+
+  const pending = provider.generateExplanation(input, { signal: controller.signal });
+  controller.abort();
+  await assert.rejects(pending, (error: unknown) =>
+    error instanceof Error && error.name === "AbortError");
+});
+
 for (const translation of [
   "组件",
   "React 组件",

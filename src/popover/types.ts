@@ -31,6 +31,7 @@ export type PopoverViewModel =
   | {
       state: "error";
       word: string;
+      failureCode?: string;
     }
   | {
       state: "offline";

@@ -1,4 +1,8 @@
+import { DirectExplanationError } from "./explanation/errors";
+
 export type FailureCode =
+  | "API_KEY_MISSING"
+  | "API_KEY_UNREADABLE"
   | "PROVIDER_TIMEOUT"
   | "CLIENT_TIMEOUT"
   | "UPSTREAM_HTTP_ERROR"
@@ -93,6 +97,19 @@ export function classifyFailure(
 
   // Timeouts are distinct from network unavailability, even when offline too.
   if (timedOut) return result("CLIENT_TIMEOUT");
+  if (error instanceof DirectExplanationError) {
+    switch (error.code) {
+      case "API_KEY_MISSING": return result("API_KEY_MISSING", false);
+      case "API_KEY_UNREADABLE": return result("API_KEY_UNREADABLE", false);
+      case "PROVIDER_TIMEOUT": return result("PROVIDER_TIMEOUT");
+      case "PROVIDER_NETWORK_ERROR": return result("PROVIDER_NETWORK_ERROR", true, true);
+      case "UPSTREAM_HTTP_ERROR": return result(
+        "UPSTREAM_HTTP_ERROR",
+        retryableHttp(error.upstreamStatus),
+      );
+      case "INVALID_RESPONSE": return result("INVALID_RESPONSE");
+    }
+  }
   if (error instanceof BackendHttpError) {
     switch (error.providerCode) {
       case "TIMEOUT": return result("PROVIDER_TIMEOUT");

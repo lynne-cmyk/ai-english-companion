@@ -30,6 +30,9 @@ files:
   - dist-electron/secrets/preload.js
   - dist-electron/secrets/safeStorageCipher.js
   - dist-electron/secrets/secretStore.js
+  - dist-provider/deepSeekProvider.js
+  - dist-provider/provider.js
+  - dist-provider/types.js
   - package.json
   - "!node_modules/**/*"
   - "!**/*.test.js"

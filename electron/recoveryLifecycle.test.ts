@@ -85,6 +85,7 @@ function createHarness() {
   };
   const exported: Record<string, any> = {};
   vm.runInNewContext(readFileSync(path.join(__dirname, "main.js"), "utf8") + `
+    explanationService = new (require("./explanation/httpExplanationService").HttpExplanationService)({ fetchImplementation: fetch });
     exports.detectWord = handleDetectedWord;
     exports.acceptSelection = handleAcceptedSelection;
     exports.setSelectionController = (value) => { selectionActionController = value; };
