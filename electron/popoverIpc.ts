@@ -1,4 +1,7 @@
 import type { FailureInfo } from "./aiRecovery";
+import type { ExplanationResult } from "./explanation/contracts";
+
+export type { ExplanationResult } from "./explanation/contracts";
 
 export const POPOVER_IPC_CHANNELS = {
   ready: "translator-popover:ready",
@@ -8,16 +11,6 @@ export const POPOVER_IPC_CHANNELS = {
 } as const;
 
 export type PopoverIpcChannels = typeof POPOVER_IPC_CHANNELS;
-
-export interface ExplanationResult {
-  word: string;
-  phonetic: string;
-  translation: string;
-  general_meaning: string;
-  context_explanation: string;
-  example: string;
-  part_of_speech?: string;
-}
 
 interface PopoverStateBase {
   requestId: number;

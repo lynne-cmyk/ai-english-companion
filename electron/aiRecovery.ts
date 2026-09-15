@@ -16,10 +16,7 @@ export interface FailureInfo {
   retryable: boolean;
 }
 
-export interface RequestSnapshot {
-  readonly word: string;
-  readonly source_app: string;
-  readonly user_goal: string;
+export interface RequestSnapshot extends Readonly<GenerateExplanationInput> {
   readonly cursorAnchor: Readonly<{ x: number; y: number }>;
 }
 
@@ -117,3 +114,4 @@ export function classifyFailure(
   }
   return result("UNKNOWN");
 }
+import type { GenerateExplanationInput } from "./explanation/contracts";

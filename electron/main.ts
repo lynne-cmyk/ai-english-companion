@@ -14,13 +14,12 @@ import {
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import {
-  BackendTransportError,
-  InvalidExplanationError,
   classifyFailure,
-  readBackendFailure,
   type FailureInfo,
   type RequestSnapshot,
 } from "./aiRecovery";
+import type { ExplanationService } from "./explanation/contracts";
+import { HttpExplanationService } from "./explanation/httpExplanationService";
 import {
   POPOVER_IPC_CHANNELS,
   type ExplanationResult,
@@ -84,7 +83,6 @@ const REACT_FLOATING_WINDOW_WIDTH = 296;
 const REACT_FLOATING_WINDOW_INITIAL_HEIGHT = 64;
 const REACT_FLOATING_WINDOW_MAX_HEIGHT = 368;
 const FLOATING_WINDOW_OFFSET = 16;
-const BACKEND_EXPLAIN_URL = "http://127.0.0.1:3001/ai/explain";
 const AI_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_USER_GOAL = "learn English while working";
 const POPOVER_RENDERER =
@@ -104,22 +102,9 @@ function nativeHelperPath(
   return resolveNativeHelperPath(helper, nativeHelperContext());
 }
 
-const PART_OF_SPEECH_LABELS = new Set([
-  "NOUN",
-  "VERB",
-  "ADJ",
-  "ADV",
-  "PREP",
-  "PRON",
-  "CONJ",
-  "DET",
-  "ART",
-  "INTJ",
-  "AUX",
-  "MODAL",
-  "NUM",
-  "PART",
-]);
+const explanationService: ExplanationService = new HttpExplanationService({
+  fetchImplementation: fetch,
+});
 
 type FloatingWindowState =
   | {
@@ -266,35 +251,6 @@ function selectionAnchor(snapshot: SelectionSnapshot) {
   }
 
   return { ...snapshot.mousePosition };
-}
-
-function normalizePartOfSpeech(value: unknown): string | undefined {
-  if (typeof value !== "string") {
-    return undefined;
-  }
-
-  const normalizedValue = value.trim().toUpperCase();
-  return PART_OF_SPEECH_LABELS.has(normalizedValue)
-    ? normalizedValue
-    : undefined;
-}
-
-function isExplanationResult(value: unknown): value is ExplanationResult {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const result = value as Record<string, unknown>;
-  const requiredFields = [
-    "word",
-    "phonetic",
-    "translation",
-    "general_meaning",
-    "context_explanation",
-    "example",
-  ];
-
-  return requiredFields.every((field) => typeof result[field] === "string");
 }
 
 function getFrontmostApplicationName() {
@@ -1130,50 +1086,6 @@ function registerReactPopoverIpc() {
   );
 }
 
-async function requestAIExplanation(
-  snapshot: RequestSnapshot,
-  signal: AbortSignal,
-) {
-  let response: Response;
-  try {
-    response = await fetch(BACKEND_EXPLAIN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        word: snapshot.word,
-        source_app: snapshot.source_app,
-        user_goal: snapshot.user_goal,
-      }),
-      signal,
-    });
-  } catch (error) {
-    throw new BackendTransportError(error);
-  }
-
-  if (!response.ok) {
-    throw await readBackendFailure(response);
-  }
-
-  let result: unknown;
-  try {
-    result = await response.json();
-  } catch (error) {
-    if (error instanceof SyntaxError) throw new InvalidExplanationError();
-    throw new BackendTransportError(error);
-  }
-
-  if (!isExplanationResult(result) || result.word !== snapshot.word) {
-    throw new InvalidExplanationError();
-  }
-
-  const partOfSpeech = normalizePartOfSpeech(result.part_of_speech);
-  const { part_of_speech: _partOfSpeech, ...requiredResult } = result;
-
-  return partOfSpeech === undefined
-    ? requiredResult
-    : { ...requiredResult, part_of_speech: partOfSpeech };
-}
-
 function beginRequest(word: string, anchor: Readonly<{ x: number; y: number }>) {
   const requestId = ++latestAIRequestId;
 
@@ -1279,9 +1191,9 @@ async function executeAIRequest(snapshot: RequestSnapshot, requestId: number) {
     let result: ExplanationResult;
 
     try {
-      result = await requestAIExplanation(
+      result = await explanationService.generateExplanation(
         snapshot,
-        requestController.signal,
+        { signal: requestController.signal },
       );
     } finally {
       clearTimeout(timeout);
