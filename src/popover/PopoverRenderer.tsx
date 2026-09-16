@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PopoverStatePayload } from "../../electron/popoverIpc";
 import { TranslatorPopover } from "./TranslatorPopover";
+import { usePopoverSpeech } from "./speech/usePopoverSpeech";
 import type { PopoverViewModel } from "./types";
 
 const DISPLAY_PARTS_OF_SPEECH = new Set([
@@ -131,6 +132,16 @@ export function PopoverRenderer() {
     () => (payload === null ? null : toViewModel(payload)),
     [payload],
   );
+  const resultWord =
+    payload?.status === "result" ? payload.result.word : null;
+  const {
+    speakerActive,
+    speakerDisabled,
+    speak,
+  } = usePopoverSpeech({
+    resultId: payload?.status === "result" ? payload.requestId : null,
+    word: resultWord,
+  });
 
   if (model === null) {
     return null;
@@ -141,15 +152,15 @@ export function PopoverRenderer() {
       <TranslatorPopover
         model={model}
         bookmarked={bookmarked}
-        speakerActive={false}
-        speakerDisabled
+        speakerActive={speakerActive}
+        speakerDisabled={speakerDisabled}
         retryDisabled={
           payload === null ||
           (payload.status !== "error" && payload.status !== "offline") ||
           !payload.failure.retryable
         }
         onBookmarkToggle={() => setBookmarked((value) => !value)}
-        onSpeakerToggle={() => undefined}
+        onSpeakerToggle={speak}
         onRetry={() => {
           if (payload !== null &&
             (payload.status === "error" || payload.status === "offline") &&
