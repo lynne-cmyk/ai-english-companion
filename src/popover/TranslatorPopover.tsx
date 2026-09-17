@@ -6,20 +6,16 @@ import { StatusView } from "./components/StatusView";
 
 export function TranslatorPopover({
   model,
-  bookmarked,
   speakerActive,
   speakerDisabled = false,
   retryDisabled = false,
-  onBookmarkToggle,
   onSpeakerToggle,
   onRetry,
 }: {
   model: PopoverViewModel;
-  bookmarked: boolean;
   speakerActive: boolean;
   speakerDisabled?: boolean;
   retryDisabled?: boolean;
-  onBookmarkToggle: () => void;
   onSpeakerToggle: () => void;
   onRetry: () => void;
 }) {
@@ -40,10 +36,8 @@ export function TranslatorPopover({
         variant={headerVariant}
         word={word}
         phonetic={isResult ? model.content.phonetic : undefined}
-        bookmarked={bookmarked}
         speakerActive={speakerActive}
         speakerDisabled={speakerDisabled}
-        onBookmarkToggle={onBookmarkToggle}
         onSpeakerToggle={onSpeakerToggle}
       />
       <div className="popover-divider" />

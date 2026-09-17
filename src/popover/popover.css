@@ -143,9 +143,8 @@ button {
 .popover-header {
   display: grid;
   flex: 0 0 auto;
-  grid-template-columns: minmax(0, 1fr) 32px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
-  gap: 12px;
   padding: 16px var(--popover-padding-x) 12px;
 }
 
@@ -185,10 +184,16 @@ button {
 }
 
 .header-phonetic-skeleton {
+  flex: 0 0 auto;
   width: 88px;
   height: 12px;
-  margin-top: 8px;
   border-radius: 4px;
+}
+
+.header-speaker-placeholder {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
 }
 
 .popover-icon-button {
@@ -202,16 +207,6 @@ button {
   background: transparent;
   cursor: pointer;
   transition: color 100ms ease, background-color 100ms ease, transform 80ms ease;
-}
-
-.popover-icon-button--bookmark {
-  width: 32px;
-  height: 32px;
-}
-
-.popover-icon-button--bookmark svg {
-  width: 16px;
-  height: 16px;
 }
 
 .popover-icon-button--speaker {
@@ -283,7 +278,7 @@ button {
 }
 
 .loading-view {
-  gap: 18px;
+  gap: 14px;
 }
 
 .meaning-section {
@@ -314,7 +309,7 @@ button {
 
 .context-surface {
   padding: 12px;
-  border: 1px solid var(--color-context-border);
+  border: 1px solid rgb(236 233 246 / 60%);
   border-radius: 10px;
   background: var(--color-context-bg);
 }
@@ -362,7 +357,21 @@ button {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 7px;
+  gap: 4px;
+}
+
+.skeleton-line {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.skeleton-line--meaning {
+  height: 24px;
+}
+
+.skeleton-line--context {
+  height: 20px;
 }
 
 .skeleton {
@@ -374,7 +383,7 @@ button {
 
 .skeleton--tag {
   width: 50px;
-  height: 18px;
+  height: 22px;
   border-radius: 5px;
 }
 
@@ -387,8 +396,7 @@ button {
 .context-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
+  margin-top: 6px;
 }
 
 .skeleton--context-wide,

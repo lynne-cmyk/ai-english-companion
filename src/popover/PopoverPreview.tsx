@@ -7,7 +7,6 @@ const previewModes = Object.keys(previewLabels) as PreviewMode[];
 
 export function PopoverPreview() {
   const [mode, setMode] = useState<PreviewMode>("result");
-  const [bookmarked, setBookmarked] = useState(false);
   const [speakerActive, setSpeakerActive] = useState(false);
   const model = useMemo(() => getPreviewModel(mode), [mode]);
 
@@ -40,14 +39,12 @@ export function PopoverPreview() {
       <section className="preview-stage" aria-live="polite">
         <TranslatorPopover
           model={model}
-          bookmarked={bookmarked}
           speakerActive={speakerActive}
-          onBookmarkToggle={() => setBookmarked((value) => !value)}
           onSpeakerToggle={() => setSpeakerActive((value) => !value)}
           onRetry={() => selectMode("loading")}
         />
         <p className="preview-note">
-          Bookmark, speaker, and retry controls are local visual fixtures only.
+          Speaker and retry controls are local visual fixtures only.
         </p>
       </section>
     </main>

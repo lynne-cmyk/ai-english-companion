@@ -1,4 +1,4 @@
-import { BookmarkButton, SpeakerButton } from "./ActionButtons";
+import { SpeakerButton } from "./ActionButtons";
 
 export type HeaderVariant = "result" | "loading" | "compact";
 
@@ -6,19 +6,15 @@ export function PopoverHeader({
   variant,
   word,
   phonetic,
-  bookmarked,
   speakerActive,
   speakerDisabled = false,
-  onBookmarkToggle,
   onSpeakerToggle,
 }: {
   variant: HeaderVariant;
   word: string;
   phonetic?: string;
-  bookmarked: boolean;
   speakerActive: boolean;
   speakerDisabled?: boolean;
-  onBookmarkToggle: () => void;
   onSpeakerToggle: () => void;
 }) {
   return (
@@ -38,15 +34,12 @@ export function PopoverHeader({
         )}
 
         {variant === "loading" && (
-          <div className="header-phonetic-skeleton skeleton" aria-label="Loading pronunciation" />
+          <div className="pronunciation-row" aria-label="Loading pronunciation">
+            <div className="header-phonetic-skeleton skeleton" aria-hidden="true" />
+            <span className="header-speaker-placeholder" aria-hidden="true" />
+          </div>
         )}
       </div>
-
-      <BookmarkButton
-        saved={variant === "result" && bookmarked}
-        disabled={variant !== "result"}
-        onToggle={onBookmarkToggle}
-      />
     </header>
   );
 }

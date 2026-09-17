@@ -1,10 +1,10 @@
 import type { ButtonHTMLAttributes, ReactNode } from "react";
-import { BookmarkIcon, SpeakerIcon } from "./Icons";
+import { SpeakerIcon } from "./Icons";
 
 interface IconButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   label: string;
   selected?: boolean;
-  size: "bookmark" | "speaker";
+  size: "speaker";
   children: ReactNode;
 }
 
@@ -27,28 +27,6 @@ function IconButton({
     >
       {children}
     </button>
-  );
-}
-
-export function BookmarkButton({
-  saved,
-  disabled = false,
-  onToggle,
-}: {
-  saved: boolean;
-  disabled?: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <IconButton
-      label={saved ? "Remove bookmark" : "Save bookmark"}
-      selected={saved}
-      size="bookmark"
-      disabled={disabled}
-      onClick={onToggle}
-    >
-      <BookmarkIcon filled={saved} />
-    </IconButton>
   );
 }
 

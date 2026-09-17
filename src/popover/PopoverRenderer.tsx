@@ -52,7 +52,6 @@ function toViewModel(payload: PopoverStatePayload): PopoverViewModel {
 
 export function PopoverRenderer() {
   const [payload, setPayload] = useState<PopoverStatePayload | null>(null);
-  const [bookmarked, setBookmarked] = useState(false);
   const stageRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -72,10 +71,6 @@ export function PopoverRenderer() {
     window.translatorPopover.ready();
     return unsubscribe;
   }, []);
-
-  useEffect(() => {
-    setBookmarked(false);
-  }, [payload?.requestId]);
 
   useLayoutEffect(() => {
     const stage = stageRef.current;
@@ -151,7 +146,6 @@ export function PopoverRenderer() {
     <div className="popover-production-stage" ref={stageRef}>
       <TranslatorPopover
         model={model}
-        bookmarked={bookmarked}
         speakerActive={speakerActive}
         speakerDisabled={speakerDisabled}
         retryDisabled={
@@ -159,7 +153,6 @@ export function PopoverRenderer() {
           (payload.status !== "error" && payload.status !== "offline") ||
           !payload.failure.retryable
         }
-        onBookmarkToggle={() => setBookmarked((value) => !value)}
         onSpeakerToggle={speak}
         onRetry={() => {
           if (payload !== null &&
