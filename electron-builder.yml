@@ -19,6 +19,7 @@ files:
   - dist-electron/nativeHelperPaths.js
   - dist-electron/permissions/contracts.js
   - dist-electron/permissions/menuBarIcon.js
+  - dist-electron/permissions/menuBarIconData.js
   - dist-electron/permissions/permissionState.js
   - dist-electron/permissions/permissionSetupWindow.js
   - dist-electron/permissions/preload.js
@@ -48,6 +49,7 @@ extraResources:
     to: native/selection-probe
 
 mac:
+  icon: assets/brand/generated/app-icon.icns
   target:
     - target: dir
       arch:

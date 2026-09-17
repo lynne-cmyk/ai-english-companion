@@ -1637,6 +1637,9 @@ if (!hasSingleInstanceLock) {
     if (process.platform === "darwin" && app.isPackaged) {
       app.setActivationPolicy("accessory");
     }
+    if (process.platform === "darwin" && !app.isPackaged) {
+      app.dock?.setIcon(path.join(__dirname, "../assets/brand/generated/app-icon.png"));
+    }
     startApiKeySetupInfrastructure();
     startLoginItemInfrastructure();
     startMenuBar();

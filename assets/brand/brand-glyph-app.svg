@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="brand-purple" x1="184.32" y1="184.32" x2="327.68" y2="327.68" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8B7CFF"/>
+      <stop offset="1" stop-color="#5B4BE0"/>
+    </linearGradient>
+  </defs>
+  <!-- Final reviewed path, normalized from the supplied 288px ceramic artwork.
+       Bounds: 240.899556 x 286.72; optical center: 256,256. -->
+  <path id="brand-glyph" d="M256 112.64C256 188.248889 304.099556 256 376.449778 256C304.099556 256 256 323.751111 256 399.36C256 323.751111 207.900444 256 135.550222 256C207.900444 256 256 188.248889 256 112.64Z" fill="url(#brand-purple)"/>
+</svg>
