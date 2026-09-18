@@ -10,7 +10,7 @@ const developmentRoot = path.join(path.sep, "workspace", "ai-english-companion")
 const packagedResources = path.join(
   path.sep,
   "Applications",
-  "AI English Companion.app",
+  "Tirva.app",
   "Contents",
   "Resources",
 );

@@ -48,10 +48,10 @@ export function permissionSetupViewModel(
 ): PermissionSetupViewModel {
   if (restartRequired) {
     return {
-      title: "需要重新打开 AI English Companion",
+      title: "需要重新打开 Tirva",
       explanation: "权限更改后，需要重新打开应用才能生效。",
       primaryAction: "relaunch",
-      primaryLabel: "重新打开 AI English Companion",
+      primaryLabel: "重新打开 Tirva",
       accessibilityRow:
         state.accessibility === "granted" ? "complete" : "pending",
       inputMonitoringRow: "current",

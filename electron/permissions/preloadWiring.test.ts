@@ -161,9 +161,9 @@ test("menu bar keeps the expected fixed product actions", () => {
     path.join(repositoryRoot, "electron/main.ts"),
     "utf8",
   );
-  assert.match(mainSource, /label: "AI English Companion", enabled: false/);
+  assert.match(mainSource, /label: "Tirva", enabled: false/);
   assert.match(mainSource, /label: "权限设置…"/);
-  assert.match(mainSource, /label: "退出 AI English Companion"/);
+  assert.match(mainSource, /label: "退出 Tirva"/);
   assert.match(mainSource, /\[tray\] creation attempted/);
   assert.match(mainSource, /\[tray\] context menu attached/);
 });

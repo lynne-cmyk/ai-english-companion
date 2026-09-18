@@ -493,7 +493,7 @@ function createPermissionSetupWindow() {
     maximizable: false,
     fullscreenable: false,
     skipTaskbar: true,
-    title: "AI English Companion — 权限设置",
+    title: "Tirva — 权限设置",
     backgroundColor: "#FFFFFF",
     webPreferences: {
       preload: path.join(__dirname, "permissions/preload.js"),
@@ -632,7 +632,7 @@ function createApiKeySetupWindow() {
     maximizable: false,
     fullscreenable: false,
     skipTaskbar: true,
-    title: "AI English Companion — AI 服务设置",
+    title: "Tirva — AI 服务设置",
     backgroundColor: "#FFFFFF",
     webPreferences: {
       preload: path.join(__dirname, "secrets/preload.js"),
@@ -809,7 +809,7 @@ function updateMenuBar(
   const loginItemPresentation = loginItemMenuPresentation(loginItemState);
   let contextMenu: Menu;
   contextMenu = Menu.buildFromTemplate([
-    { label: "AI English Companion", enabled: false },
+    { label: "Tirva", enabled: false },
     { label: menuStatusLabel(status), enabled: false },
     { type: "separator" },
     {
@@ -841,7 +841,7 @@ function updateMenuBar(
     },
     { type: "separator" },
     {
-      label: "退出 AI English Companion",
+      label: "退出 Tirva",
       click: () => {
         applicationIsQuitting = true;
         app.quit();
@@ -859,7 +859,7 @@ function startMenuBar() {
   console.log("[tray] creation attempted");
   menuBarTray = new Tray(createMenuBarIcon());
   console.log("[tray] created and retained");
-  menuBarTray.setToolTip("AI English Companion");
+  menuBarTray.setToolTip("Tirva");
   updateMenuBar("checking");
   console.log("[tray] context menu attached");
 }
@@ -1573,7 +1573,7 @@ function createTechnicalSpikeWindow() {
   mainWindow = new BrowserWindow({
     width: 720,
     height: 440,
-    title: "AI English Companion — Technical Spike",
+    title: "Tirva — Technical Spike",
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

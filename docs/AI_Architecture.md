@@ -2,7 +2,7 @@
 
 ## 1. System Overview
 
-AI English Companion 采用客户端、后端服务和 AI 模型三层结构：
+Tirva 采用客户端、后端服务和 AI 模型三层结构：
 
 ```text
 Electron Desktop App

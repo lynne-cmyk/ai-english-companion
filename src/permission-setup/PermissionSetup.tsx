@@ -102,7 +102,7 @@ export function PermissionSetup() {
     <main className={`setup-shell${model.isSuccess ? " setup-shell--success" : ""}`}>
       <header className="setup-header">
         <span className="setup-mark" aria-hidden="true">✦</span>
-        <span>AI English Companion</span>
+        <span>Tirva</span>
       </header>
 
       <section className="setup-content" aria-live="polite">

@@ -1,4 +1,4 @@
-# Locked AI English Companion identity
+# Locked Tirva identity
 
 `brand-glyph-app.svg` is the App Icon optical master. Its four cubic curves
 come directly from the final supplied SVG's 288px ceramic artwork (center

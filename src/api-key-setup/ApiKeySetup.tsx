@@ -91,7 +91,7 @@ export function ApiKeySetup() {
     <main className="key-setup-shell">
       <header className="key-setup-header">
         <span aria-hidden="true">✦</span>
-        <span>AI English Companion</span>
+        <span>Tirva</span>
       </header>
 
       <section className="key-setup-content" aria-live="polite">
